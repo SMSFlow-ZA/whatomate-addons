@@ -1,0 +1,35 @@
+# Disposable synthetic test infrastructure, never production configuration.
+name: whatomate-addons-tests
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: addon_test
+      POSTGRES_PASSWORD: synthetic-test-only
+      POSTGRES_DB: addons
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U addon_test -d addons]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  test:
+    image: golang:1.26.9-alpine
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    environment:
+      DIRECTORY_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+      CASES_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+      KNOWLEDGE_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+      GOVERNANCE_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+      WORKFLOW_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    command: [sh, -c, "apk add --no-cache gcc musl-dev >/dev/null && go test -count=1 -race -tags integration ./... && go vet -tags integration ./..."]
+volumes:
+  go-mod:
+  go-build:
