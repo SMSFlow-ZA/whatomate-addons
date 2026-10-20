@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -40,17 +41,20 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return e
 	}
 	_, e = db.ExecContext(ctx, `ALTER TABLE addon_conversation_delivery ADD COLUMN IF NOT EXISTS provider_id text NOT NULL DEFAULT '';
-CREATE TABLE IF NOT EXISTS addon_conversation_delivery_receipt(tenant text NOT NULL,account text NOT NULL,receipt_id text NOT NULL,intent_id text NOT NULL,provider_id text NOT NULL,fingerprint text NOT NULL,outcome text NOT NULL,observed_at timestamptz NOT NULL,recorded_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(tenant,account,receipt_id))`)
+CREATE TABLE IF NOT EXISTS addon_conversation_delivery_receipt(tenant text NOT NULL,account text NOT NULL,receipt_id text NOT NULL,intent_id text NOT NULL,provider_id text NOT NULL,fingerprint text NOT NULL,outcome text NOT NULL,observed_at timestamptz NOT NULL,recorded_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(tenant,account,receipt_id));CREATE TABLE IF NOT EXISTS addon_delivery_erased(tenant text NOT NULL,id text NOT NULL,PRIMARY KEY(tenant,id))`)
 	return e
 }
 
 // Enqueue participates in the inbound/turn transaction. Stable IDs reject duplicate sends.
 func Enqueue(ctx context.Context, tx *sql.Tx, m Message) error {
+	if _, e := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("delivery-intent:%d:%s:%s", len(m.Tenant), m.Tenant, m.ID)); e != nil {
+		return e
+	}
 	b, e := json.Marshal(m)
 	if e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(ctx, `INSERT INTO addon_conversation_delivery(id,tenant,sender,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, m.ID, m.Tenant, m.Sender, b)
+	_, e = tx.ExecContext(ctx, `INSERT INTO addon_conversation_delivery(id,tenant,sender,payload) SELECT $1,$2,$3,$4 WHERE NOT EXISTS(SELECT 1 FROM addon_delivery_erased WHERE tenant=$2 AND id=$1) ON CONFLICT DO NOTHING`, m.ID, m.Tenant, m.Sender, b)
 	return e
 }
 

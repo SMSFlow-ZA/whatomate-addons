@@ -14,7 +14,7 @@ type devTransport func(*http.Request) (*http.Response, error)
 
 func (f devTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestNativeSourceIndexMapsOnlyServerOwnedReference(t *testing.T) {
-	for _, content := range []string{`{"intent":"answerable","evidence_index":0}`, `{"intent":"answerable","evidence_index":64}`} {
+	for _, content := range []string{`{"supporting_words":"approved source contains relevant guidance","intent":"answerable","evidence_index":0}`, `{"intent":"answerable","evidence_index":64}`} {
 		p := &DevelopmentProvider{config: DevelopmentConfig{Endpoint: "http://127.0.0.1:11434"}, client: &http.Client{Transport: devTransport(func(r *http.Request) (*http.Response, error) {
 			data := ""
 			if r.URL.Path == "/api/tags" {
@@ -58,7 +58,7 @@ func TestIndependentVerifierCanRejectTopicalSelectorOutput(t *testing.T) {
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
 				schema, _ := json.Marshal(body["format"])
-				content := `{"intent":"answerable","evidence_index":0}`
+				content := `{"supporting_words":"approved source contains relevant guidance","intent":"answerable","evidence_index":0}`
 				if strings.Contains(string(schema), "relationship") {
 					content = decision
 				}

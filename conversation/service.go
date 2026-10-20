@@ -20,7 +20,11 @@ var ErrDenied = errors.New("conversation denied")
 var ErrConflict = errors.New("inbound key conflict")
 
 // Inbound is a trusted verified-provider port, never an unauthenticated HTTP DTO.
-type Inbound struct{ Tenant, Account, Sender, ProviderMessageID, Text string }
+type Inbound struct {
+	Tenant, Account, Sender, ProviderMessageID, Text string
+	ProviderTimestamp                                time.Time
+	ExpectedEmployeeID, ExpectedUnitID               string
+}
 type Answer struct {
 	Text      string   `json:"text"`
 	Citations []string `json:"citations"`
@@ -83,6 +87,9 @@ func (s Service) employee(ctx context.Context, in Inbound) (directory.Employee, 
 	emp, e := directory.Match(snap, in.Sender, s.Config.Clock(), s.Config.Freshness)
 	if e != nil {
 		return emp, cases.Principal{}, ErrDenied
+	}
+	if in.ExpectedEmployeeID != "" && (emp.ID != in.ExpectedEmployeeID || emp.Zone != in.ExpectedUnitID) {
+		return directory.Employee{}, cases.Principal{}, ErrDenied
 	}
 	aliases, e := s.Config.Aliases(ctx, in.Tenant, emp.ID)
 	if e != nil {

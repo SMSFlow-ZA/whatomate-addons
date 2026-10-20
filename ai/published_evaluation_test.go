@@ -75,6 +75,7 @@ func TestActualPublishedModelEvaluation(t *testing.T) {
 		}
 		capture.raw = nil
 		capture.exchanges = nil
+		capture.requests = nil
 		observed.sources = nil
 		start := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
@@ -84,7 +85,7 @@ func TestActualPublishedModelEvaluation(t *testing.T) {
 		for _, s := range observed.sources {
 			sources = append(sources, map[string]any{"document_id": s.DocumentID, "version": s.Version, "page": s.Page.Number, "content_hash": s.ContentHash, "manifest_hash": s.ManifestHash, "extractor": s.Page.ExtractorRevision})
 		}
-		enc.Encode(map[string]any{"question_id": q.ID, "question": q.Input, "actual_result": result, "actual_native_response": capture.raw, "actual_native_responses": capture.exchanges, "retrieved_sources": sources, "elapsed_ms": time.Since(start).Milliseconds(), "evidence_mode": "ACTUAL governed SQL publications and durable current grant; actual scanned/poppler pages; direct Service, not HTTP/session acceptance", "semantic_review": "REQUIRED"})
+		enc.Encode(map[string]any{"question_id": q.ID, "question": q.Input, "actual_result": result, "actual_native_response": capture.raw, "actual_native_responses": capture.exchanges, "actual_native_requests": capture.requests, "retrieved_sources": sources, "retrieved_evidence_spans": evidenceSpans(observed.sources), "elapsed_ms": time.Since(start).Milliseconds(), "evidence_mode": "ACTUAL governed SQL publications and durable current grant; actual scanned/poppler pages; direct Service, not HTTP/session acceptance", "semantic_review": "REQUIRED"})
 		output.Sync()
 		t.Log(q.ID, "handoff", result.Handoff, "bytes", len(result.Text))
 	}

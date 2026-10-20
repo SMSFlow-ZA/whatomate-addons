@@ -13,6 +13,29 @@ func EraseEmployee(ctx context.Context, tx *sql.Tx, tenant, employeeID string) e
 	if tx == nil || tenant == "" || employeeID == "" {
 		return ErrInvalid
 	}
-	_, e := tx.ExecContext(ctx, `DELETE FROM addon_conversation_delivery WHERE tenant=$1 AND payload->>'employee_id'=$2`, tenant, employeeID)
-	return e
+
+	rows, e := tx.QueryContext(ctx, `SELECT id FROM addon_conversation_delivery WHERE tenant=$1 AND payload->>'employee_id'=$2 ORDER BY id`, tenant, employeeID)
+	if e != nil {
+		return e
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			rows.Close()
+			return e
+		}
+		ids = append(ids, id)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return e
+	}
+	for _, id := range ids {
+		if e = EraseIntent(ctx, tx, tenant, id); e != nil {
+			return e
+		}
+	}
+	return nil
 }

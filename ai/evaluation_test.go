@@ -88,7 +88,7 @@ func TestLocalModelEvaluation(t *testing.T) {
 			}
 		}
 		cancel()
-		if e = enc.Encode(map[string]any{"case_id": c.ID, "scenario": c.Scenario, "model": DevelopmentModel, "model_digest": DevelopmentModelDigest, "native_response": capture.raw, "actual_completion": raw, "service_result": result, "model_error": modelError, "duration_ms": time.Since(start).Milliseconds(), "source_hashes_verified": valid, "source_approval_scanning": "SUBSTITUTED external exact-page oracle; no publication; no full-stack authorization claim", "semantic_review": "REQUIRED"}); e != nil {
+		if e = enc.Encode(map[string]any{"case_id": c.ID, "scenario": c.Scenario, "model": DevelopmentModel, "model_digest": DevelopmentModelDigest, "native_response": capture.raw, "native_responses": capture.exchanges, "actual_completion": raw, "service_result": result, "model_error": modelError, "duration_ms": time.Since(start).Milliseconds(), "source_hashes_verified": valid, "source_approval_scanning": "SUBSTITUTED external exact-page oracle; no publication; no full-stack authorization claim", "semantic_review": "REQUIRED"}); e != nil {
 			t.Fatal(e)
 		}
 		f.Sync()
@@ -100,9 +100,19 @@ type evaluationCapture struct {
 	next      http.RoundTripper
 	raw       json.RawMessage
 	exchanges []json.RawMessage
+	requests  []json.RawMessage
 }
 
 func (c *evaluationCapture) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == "/api/chat" && r.Body != nil {
+		data, e := io.ReadAll(r.Body)
+		if e != nil {
+			return nil, e
+		}
+		r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		c.requests = append(c.requests, append(json.RawMessage(nil), data...))
+	}
 	response, e := c.next.RoundTrip(r)
 	if e == nil && r.URL.Path == "/api/chat" {
 		data, readError := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))

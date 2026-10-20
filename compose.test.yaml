@@ -14,7 +14,7 @@ services:
       timeout: 2s
       retries: 30
   test:
-    image: golang:1.26.9-alpine
+    image: golang:1.26.9
     working_dir: /src
     volumes:
       - .:/src
@@ -23,6 +23,7 @@ services:
     environment:
       API_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       AI_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
+      CARRIER_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       CONVERSATION_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       DIRECTORY_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       CASES_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
@@ -32,7 +33,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: [sh, -c, "apk add --no-cache gcc musl-dev >/dev/null && go test -count=1 -race -tags integration ./... && go vet -tags integration ./..."]
+    command: [sh, -c, "go test -p 1 -count=1 -race -tags integration ./... && go vet -tags integration ./..."]
 volumes:
   go-mod:
   go-build:

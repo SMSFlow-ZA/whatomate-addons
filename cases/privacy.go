@@ -134,7 +134,7 @@ func (PrivacyAdapter) Discover(ctx context.Context, tx *sql.Tx, a api.Actor, s g
 		}
 		if table {
 			var external bool
-			if e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM addon_cases_delivery d JOIN addon_cases_outbox o ON o.id=d.id WHERE d.organization_id=$1 AND o.case_id=$2 AND d.state IN('sending','accepted','delivered','held_unknown'))`, a.OrganizationID, c.ID).Scan(&external); e != nil {
+			if e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM addon_cases_delivery d JOIN addon_cases_outbox o ON o.id=d.id WHERE d.organization_id=$1 AND o.case_id=$2 AND (d.state IN('sending','accepted','delivered','held_unknown') OR d.provider_id<>'' OR EXISTS(SELECT 1 FROM addon_cases_delivery_receipt receipt WHERE receipt.tenant=d.organization_id AND receipt.intent_id=d.id)))`, a.OrganizationID, c.ID).Scan(&external); e != nil {
 				return nil, e
 			}
 			if external {

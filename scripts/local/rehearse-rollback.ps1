@@ -3,6 +3,13 @@ $ErrorActionPreference='Stop'
 if(-not $ConfirmIndependentJournalReconciled){throw 'Reconcile the independent deletion/hold journal offline before starting restored application access.'}
 $addonSource=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $privateRuntime=Join-Path ([IO.Path]::GetFullPath($HostSource)) '.work/synthetic-local'
+# A previous binary may not understand private SMS connection exclusions. Keep
+# this generic legacy rehearsal unavailable for an activated carrier profile.
+$currentConfig=Get-Content -Raw -LiteralPath (Join-Path $privateRuntime 'host.toml')
+if($currentConfig -match '(?m)^\s*carrier_enabled\s*=\s*true\s*(?:#.*)?$'){throw 'Active protected carrier binding requires a reviewed carrier-aware rollback; legacy rehearsal refused.'}
+$rollbackGuard=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'sql/assert-carrier-rollback.sql')
+& docker exec whatomate-synthetic-local-db-1 psql -X -v ON_ERROR_STOP=1 -U synthetic_local -d $RestoredDatabase -c $rollbackGuard | Out-Null
+if($LASTEXITCODE -ne 0){throw 'Restored carrier state is not accepted by the legacy rollback rehearsal.'}
 $baselinePath=[IO.Path]::GetFullPath($Baseline)
 $expected=[IO.Path]::GetFullPath((Join-Path $privateRuntime 'rollback'))+[IO.Path]::DirectorySeparatorChar
 if(-not $baselinePath.StartsWith($expected,[StringComparison]::OrdinalIgnoreCase)){throw 'Expected this dedicated local private baseline directory'}

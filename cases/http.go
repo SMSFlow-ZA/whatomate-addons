@@ -133,7 +133,7 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 				Snapshot  Classification `json:"snapshot"`
 				Draft     bool           `json:"draft"`
 			}
-			if api.Decode(r, &in) != nil || strings.TrimSpace(in.Narrative) == "" || len(in.Narrative) > 65536 || in.Snapshot.Zone == "" || in.Snapshot.Department == "" || in.Snapshot.CaseType == "" {
+			if api.Decode(r, &in) != nil || strings.TrimSpace(in.Narrative) == "" || len(in.Narrative) > 65536 {
 				api.Error(w, 400, "invalid_input")
 				return
 			}
