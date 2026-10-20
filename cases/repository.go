@@ -42,6 +42,9 @@ type OutboxMessage struct {
 type IntakeRequest struct {
 	OrganizationID, UnitID, ContactID, Key string
 	Participants                           []Participant
+	Narrative                              string         `json:",omitempty"`
+	Snapshot                               Classification `json:",omitzero"`
+	Draft                                  bool           `json:",omitempty"`
 }
 type IntakeResult struct {
 	CaseID  string
@@ -73,7 +76,14 @@ func (s Service) Intake(ctx context.Context, req IntakeRequest) (IntakeResult, e
 	hash := sha256.Sum256(payload)
 	fingerprint := hex.EncodeToString(hash[:])
 	now := time.Now().UTC()
-	c := Case{ID: id, OrganizationID: req.OrganizationID, UnitID: req.UnitID, ContactID: req.ContactID, State: Submitted, Version: 1, Participants: []Participant{{ID: req.ContactID, Role: Complainant}}, Events: []Event{{Version: 1, ActorID: req.ContactID, From: Draft, To: Submitted, RecordedAt: now, OccurredAt: now, OrganizationID: req.OrganizationID, UnitID: req.UnitID}}}
+	c := Case{ID: id, OrganizationID: req.OrganizationID, UnitID: req.UnitID, ContactID: req.ContactID, State: Submitted, Version: 1, Participants: []Participant{{ID: req.ContactID, Role: Complainant}}, Events: []Event{{Kind: "intake", Version: 1, ActorID: req.ContactID, From: Draft, To: Submitted, RecordedAt: now, OccurredAt: now, OrganizationID: req.OrganizationID, UnitID: req.UnitID}}}
+	c.Snapshot = req.Snapshot
+	c.Category = req.Snapshot.CaseType
+	c.Narrative = req.Narrative
+	if req.Draft {
+		c.State = Draft
+		c.Events[0].To = Draft
+	}
 	c.Participants = append(c.Participants, req.Participants...)
 	tx, err := s.Repository.Begin(ctx)
 	if err != nil {
@@ -202,7 +212,7 @@ func (s Service) Assign(ctx context.Context, p Principal, id string, expected ui
 	next.Assignments = []Assignment{a}
 	next.State = Assigned
 	next.Version++
-	next.Events = append(next.Events, Event{Version: next.Version, ActorID: p.ID, From: c.State, To: Assigned, Reason: "assigned to " + a.ID, RecordedAt: time.Now().UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
+	next.Events = append(next.Events, Event{Kind: "assignment", Version: next.Version, ActorID: p.ID, From: c.State, To: Assigned, Reason: "assigned to " + a.ID, RecordedAt: time.Now().UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
 	if e = tx.Save(ctx, next, expected); e != nil {
 		return Case{}, e
 	}

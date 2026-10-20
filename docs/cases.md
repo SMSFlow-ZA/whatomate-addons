@@ -1,46 +1,145 @@
 # Protected cases
 
-`cases/` is a standalone AGPL domain and PostgreSQL persistence adapter. It has no host internal imports and stores only generic case metadata. Identity claims, membership, participant links and routing conflict facts are trusted host inputs; never populate them directly from an unauthenticated request. The package sends no messages.
+`cases/` owns durable protected case metadata, narratives, drafts, human category
+corrections, participant conflict facts, assignments and lifecycle events. The
+package uses only its own PostgreSQL tables and never sends messages.
 
-## Implemented
+## HTTP and operator UI
 
-- Draft → Submitted → Assigned → InProgress, AwaitingInfo, Escalated, Resolved and Closed. Resolved/Closed can reopen to InProgress only with a nonblank reason. `Transition` is a pure domain operation; `Service.ChangeState` persists it with optimistic compare-and-swap. Intake starts at Submitted; a host draft editor is not provided.
-- Participants distinguish complainant, subject and participant supervisor. These links alone grant no read or work access. A subject is denied even when another role or permission would allow access. The host must link all identities of a subject before assigning a case.
-- `WorkAssigned` requires both an assignment as handler/supervisor and an exact organization/unit grant. `ReadOwn` and `SubmitOwn` require a matching complainant link and exact scope. There are no organization admin, support or wildcard bypasses.
-- Unassigned triage uses separate `ReadTriage` and `AssignTriage` grants. `Service.Assign` only assigns an unassigned Submitted case. It rejects a subject as the triage actor and routes to an explicitly scoped, conflict-free handler/supervisor, trying primary candidates before backup candidates. No eligible route returns `ErrNoRoute`; the host must arrange manual handling.
-- `Service.Read` filters access and treats unknown and denied IDs alike. Repository methods and the memory diagnostic `Snapshot` bypass authorization and must remain internal. There is no public list/search endpoint.
-- Multiple cases may share a contact. Intake deduplicates by organization plus caller-supplied message key, with a SHA-256 fingerprint of the complete structured request. Reusing a key with different fields fails. Participant order is significant to the fingerprint, so replay the identical request.
-- Every intake, assignment and lifecycle command records actor, monotonically increasing aggregate version, organization/unit at event time, server recording time, occurrence time, from/to state and reason. The current scope cannot change through `Save`. Occurrence time is an asserted historical fact and can precede recording time. Reopen reason remains on the aggregate and in the event.
-- Intake commits the case, idempotency record, initial audit event and one acknowledgement outbox record in the same transaction. No acknowledgement is dispatched in that transaction. An ID is returned only after confirmed commit with no error. Commit errors are conservatively Unknown; callers retry the exact intake key/request to discover the durable result. Never generate a new key after an uncertain commit.
+`NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler` performs no DDL.
+`HTTPConfig.Enabled` defaults false. The host authenticates a current MFA session
+and resolves current explicit permissions and exact unit grants into `api.Actor`.
+`PrincipalForActor` copies only grants that pass `Actor.Allows(permission, unit)`.
+Neither bodies nor query parameters can supply actors, grants, contact identity or
+organization. API keys cannot obtain the operator session context.
 
-## Persistence and transaction contract
+All routes are below `/api/extensions/cases` and return the shared `{data: ...}`
+or `{error:{code:...}}` envelope with `Cache-Control: no-store`:
 
-`SQLRepository` accepts a host-owned `*sql.DB` with a PostgreSQL driver. Its explicit `Migrate(ctx)` installs the v1 `addon_cases_case`, `addon_cases_intake`, `addon_cases_outbox` and `addon_cases_event` tables and the contact lookup index. Schema changes run atomically. Run migration with a migration identity, then give the runtime identity only the DML it needs. The adapter never writes host core tables. The host must supply and configure its driver, connection pool, encryption, credentials, backups and tenant deployment boundary.
+| Method/path | Behavior |
+| --- | --- |
+| GET `/` | Current authorized inbox, optional `q` reference/state/category search |
+| POST `/` | Intake with `unit_id`, `key`, `narrative`, `snapshot:{zone,department,case_type}`, optional `draft` |
+| GET `/{id}` | Current authorized detail; unknown and denied return the same 404 |
+| PUT `/{id}/draft` | Save narrative on a Draft |
+| POST `/{id}/state` | Validated lifecycle transition |
+| POST `/{id}/assignment` | Assignment/reassignment using verified `candidate_id`, optional `backup_ids`, `role`, reason |
+| POST `/{id}/category` | Human category correction and mandatory reason |
+| POST `/{id}/participants` | Verified `candidate_id`, `participant_role` subject/supervisor, mandatory reason |
+| GET `/facts` | Operator reporting facts; requires `reports:operational` and current assigned/triage case-read scope |
 
-Intake holds a transaction-scoped advisory lock over a hash of the structured organization/key pair. Full composite uniqueness remains enforced by PostgreSQL; hash collisions only serialize unrelated keys. Read-committed isolation and a version-conditional UPDATE protect concurrent mutations. Audit insertion is in the same transaction as the updated aggregate. Separate event rows retain event-time scope and are not reconstructed from present membership.
+Mutations of an existing case require `expected_version`; an optional
+`occurred_at` defaults to server time. Unknown JSON fields and oversized bodies
+are rejected. Invalid input is 400, unavailable/denied actions 403, version/key
+conflicts 409, persistence failure 503. Uncertain commits use 503
+`commit_unknown_retry_same_key`, returning no provisional case ID. Error bodies
+never include narratives, identities, SQL errors or authentication secrets.
 
-`Repository.Begin` returns a `Transaction` with provisional writes. A caller must roll back after any operation error and must never expose a provisional case ID. `Commit` returns Committed only when persistence confirms it; RolledBack means known not committed; Unknown means confirmation was lost. Rollback must be safe after terminal operations. Transactions are single-goroutine objects. A host adapter implementing this interface must preserve these semantics, full idempotency keys, immutable scope, CAS and atomic outbox/audit writes. Read-only service operations roll back their transaction after reading.
+Intake requires an exact `cases:submit.own` unit grant. The authenticated
+principal becomes the linked complainant; the request cannot choose another
+complainant. Operator intake classification values are explicit captured inputs,
+not inferred historical membership. A host employee-channel adapter must resolve
+verified eligibility, identity and classification before invoking the domain
+service. The WhatsApp adapter is outside this package.
 
-`MemoryRepository` is a cancellation-aware serialized reference adapter for tests/development, not durable storage. Its `Seed` and `Snapshot` are diagnostics and deliberately bypass policy.
+The host's CasesPage uses the existing authenticated Axios service and CSRF
+interceptor. It reads current grants from `/api/extensions/catalog`, renders a
+live inbox and detail, and exposes draft, lifecycle, assignment/reassignment,
+verified participant and human correction actions. Its intake retry keeps an
+unchanged serialized payload and idempotency key while the outcome is unknown.
+Narratives remain in component memory and are not stored in browser persistence.
 
-## Verification
+## Authorization and privacy
 
-Unit tests exercise scope/default denial, subject conflict overriding grants, separate unassigned triage, participant validation, protected reads, detached aggregates, lifecycle/reopen rules, invalid-transition immutability, conflict/backup selection, concurrent intake deduplication and CAS, rollback, cancellation, structured idempotency keys, and suppressed IDs on failed/uncertain commit.
+Participants distinguish complainant, subject and participant supervisor. Links
+never grant read/work rights. Subject conflict overrides every grant. Assigned
+handlers/supervisors need `cases:work.assigned` for the exact organization/unit.
+Unassigned triage requires `cases:read.triage`; triage management separately
+requires `cases:assign.triage`. There is no implicit administrator, wildcard unit
+or support bypass. Own reads/submission require a matching verified complainant
+identity and `cases:read.own`/`cases:submit.own` for that exact scope.
 
-PostgreSQL tests use a disposable database supplied in `CASES_DATABASE_URL`:
+`HTTPConfig.ResolveCandidate` must resolve a live same-organization identity and
+its current explicit work grants. It returns a verified Principal even if that
+identity has no work grant, allowing conflict facts to be recorded. Assignment
+routing independently requires `cases:work.assigned` and a conflict-free target,
+trying primary before backup candidates. No eligible route fails closed. Linking
+a subject immediately removes that identity's existing assignment. Participant
+link changes, assignments and category corrections retain actor, reason and
+identity facts in internal versioned audit events.
+
+A pure own-case read receives `EmployeeDTO` only: `id`, `state`, `version`.
+Narratives, assignment and participant identities, reasons, classification,
+internal events and contact IDs are omitted. Operator detail uses a separate
+explicit DTO. The fact API excludes own-only cases. Module repository APIs and
+MemoryRepository diagnostics bypass policy and must never be exposed directly.
+
+## Durability, history and recovery
+
+`SQLRepository.Migrate(ctx)` explicitly installs/upgrades versioned module-owned
+storage atomically under a migration advisory lock. Versions 1 and 2 are recorded
+in `addon_cases_schema`; the v2 aggregate fields are additive JSON and preserve
+legacy zero-value intake fingerprints. Schema work requires a migration identity;
+runtime identities need only DML. No host core table is modified.
+
+Intake atomically commits the case, complete structured request fingerprint,
+organization/key idempotency record, initial audit event and one acknowledgement
+outbox intent. It serializes duplicate keys with a transaction-scoped advisory
+lock and retains full-key uniqueness. Participant order affects fingerprints.
+Replaying identical requests recovers the durable result; a changed request with
+the same key conflicts. Commit uncertainty never produces a successful ID. Retry
+the original key and identical payload rather than generating another key.
+
+Draft and narrative edits, category corrections, participant facts and assignment
+changes use compare-and-swap and append an event in the same transaction. Scope,
+contact and creation-time zone/department/type snapshots cannot change through
+Save. Current corrected Category is separate from the immutable CaseType at
+intake. Historical facts therefore retain the original snapshot even after human
+correction. Events preserve stable case/version IDs, recording and occurrence
+times, event-time organization/unit and internal audit facts.
+
+Lifecycle is Draft → Submitted → Assigned → InProgress, AwaitingInfo, Escalated,
+Resolved and Closed with defined permitted transitions. Resolved/Closed reopen to
+InProgress only with a nonblank reason. Occurrence time may precede recording.
+
+`ReportFacts(ctx, db, actor)` is the authorized cross-module event/fact producer.
+It returns no narratives, participant/assignment IDs, actor identities or reasons.
+Each fact has case ID, version, event-time organization/unit, immutable snapshot,
+from/to state and occurrence/recording times. It filters against current operator
+case-read grants and subject conflicts at delivery. Reports must use this API,
+not query private case tables. `AggregateFacts(ctx, db, actor)` is a separate server-only boundary for exact
+`reports:aggregate` unit grants. It replaces case IDs with stable one-way digests
+and returns only classification/state/time facts. It excludes subject conflicts
+and is never wired as a raw HTTP endpoint. Its reporting consumer must apply
+aggregate suppression before delivery. Aggregate-only leadership permissions do not grant
+raw facts; report suppression remains owned by the reporting module.
+
+Transactions are single-goroutine objects. A transaction's writes and IDs remain
+provisional until confirmed Committed. Unknown is distinct from RolledBack.
+Rollback remains safe after terminal operations. MemoryRepository is a serialized,
+cancellation-aware reference adapter for tests only, not durable production storage.
+
+## Verification and remaining operational work
+
+Synthetic unit/HTTP and real PostgreSQL concurrency tests cover scope/default
+denial, unknown/denied equivalence, strict input, subject overrides, primary and
+backup routing, verified conflict links, redacted employee responses, current
+grant revocation, draft durability, immutable classification, category audit,
+concurrent intake/CAS and uncertain-commit replay without duplicate outbox rows.
+Run the disposable test database with `CASES_DATABASE_URL` configured:
 
 ```sh
 go test ./cases
 go test -race ./cases
 go vet ./cases
-go test -tags integration ./cases
 go test -race -tags integration ./cases
 ```
 
-Integration tests verify sixteen concurrent identical intakes produce one case, intake key, outbox record and audit row; a reconstructed service replays the same ID; sixteen competing assignments have one winner and two persisted events; explicit rollback leaves none of the four records. A test driver wraps real pgx/server transactions, commits on the server, then simulates a lost commit confirmation. The service reports Unknown with no ID, and a normal replay recovers one durable case without a duplicate acknowledgement. The driver is test-only; production code depends only on the standard library.
+Operational work remains: attachments, retention/deletion/legal hold, audit
+export, and an acknowledgement dispatcher with leases/retries/provider
+idempotency. The outbox records intent only and makes no delivery or exactly-once
+claim. Production encryption, runtime credentials, backups, privacy/security
+review and release acceptance belong to the host/deployment boundary. No
+production deployment or chargeable messaging is authorized by this component.
 
-## Production work still required
-
-This is a domain/persistence component, not an enabled host feature. HTTP/API handlers, authenticated identity and eligibility integration, host extension registration, permission administration, participant updates, reassignment, draft persistence/editor, attachments and sensitive narrative storage, retention/deletion/legal hold, immutable audit export, list/search query filtering, redacted complainant views, operational reporting, migrations beyond v1 and an acknowledgement dispatcher are not provided. Own-case reads currently return the full metadata aggregate, so a host exposing complainant reads must explicitly design/redact its response. Disabling `ReadOwn` prevents that surface until the view exists.
-
-The outbox is durable intent only. There is no claim/lease/retry/delivery acknowledgement API, provider idempotency contract or exactly-once messaging guarantee. Production release requires an independently reviewed dispatcher, privacy/security review, failure/recovery exercises and host acceptance tests. No deployment or chargeable messaging is authorized by this package.
+HTTP intake requires a trusted ResolveIntake callback. The host derives immutable zone/department/type from the current approved employee directory. Client snapshot fields are ignored for persistence; missing policy denies creation. Assigned case assistance uses exported CanWork, excluding triage-only visibility and all subject aliases. Escalate atomically records conflict-aware routing and the Escalated lifecycle state.

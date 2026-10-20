@@ -160,3 +160,79 @@ and concurrent publish/retire against grant revocation. Durable storage is now
 implemented; production RBAC synchronization, operational DB controls, migration
 rollout, scanner/OCR integration, approval UI, and the external deployment gates
 remain acceptance work.
+
+## Authenticated lifecycle HTTP and durable processing queue
+
+`NewHTTPHandler(db, HTTPConfig{Enabled: true, Authorize: currentHostResolver})`
+registers the knowledge module under `/api/extensions/knowledge`. Construction
+performs no DDL. Run `MigrateHTTP` explicitly with the migration role first.
+The host must supply a current role and exact audience resolver; a missing
+resolver disables the module. Each action also requires a trusted `api.Actor`,
+MFA session, exact permission and audience grants. Permissions are
+`knowledge:upload`, `knowledge:review`, `knowledge:publish`, `knowledge:retire`
+and `knowledge:read`. All audiences of an upload must be allowed for the action.
+Reviewer permission is resolved again at publication; publisher and reviewer
+must be different people. A role name or administrator flag grants no access.
+
+Upload `POST /uploads` as multipart `file` (at most 20 MiB original bytes) and
+`metadata` (at most 32 KiB strict JSON): `document_id`, `version`, `filename`,
+`media_type`, `audiences`, `effective_at` and optional `withdraw_at`. The bounded
+original bytes, canonical metadata hashes and actor/tenant binding persist in
+`addon_knowledge_jobs`. The response is a queued job identifier. There is no
+HTTP scan/evidence/extraction completion endpoint. Status and immutable review
+pages are available through `GET /jobs` and `GET /jobs/{id}` to the scoped
+uploader or scoped reviewers, publishers and retirement operators.
+
+A separately deployed trusted controller uses `NewProcessingQueue(db).Claim`
+to obtain original bytes, exact hashes and a random lease token, runs the
+pinned isolated document worker, verifies its receipt, then calls
+`CompleteWithReceipt` with pages, evidence and the receipt linkage. This stores
+job/input/metadata/output hashes, worker profile, image digest and scanner
+definitions revision. The controller verifies the worker's own format metadata
+hash separately from the knowledge upload metadata hash. The lower-level
+`Complete` method is a trusted adapter/testing port; neither completion method
+is exposed to HTTP. No Docker socket is needed or permitted in the web app.
+Claims last one second to fifteen minutes. Completion verifies the exact stored
+bytes, metadata, tenant, original actor and unexpired one-use lease. Replay,
+changed hashes and unsuccessful scan/extraction are denied. `Fail` records only
+fixed non-sensitive outcome codes. Expired leases and indeterminate worker
+outcomes become `unknown`; neither unknown nor failed jobs are automatically
+replayed or eligible for review/publication. An operator must investigate and
+upload a fresh version when appropriate.
+
+`POST /jobs/{id}/approve`, `/publish` and `/retire` accept only
+`{"expected_version": n}`. Review loads the worker-created artifact from durable
+storage and binds approval to its exact manifest; clients cannot submit pages or
+evidence. Mutations return a conflict for stale versions and inappropriate
+states. Publication or final persistence failures return
+`operation_outcome_unknown`; callers must inspect durable status before retrying.
+Domain publication, approval or retirement and the corresponding job status commit
+atomically in one transaction. A lost commit acknowledgement still requires
+reading authoritative state rather than inferring rollback from a failed response.
+
+`GET /search?audience=...&q=...` returns current full-text sources with original
+page, approved manifest and content hash citations. `GET /download?audience=...
+&document_id=...&version=...` revalidates current version, audience, effective and
+withdrawal dates, retirement and manifest before serving the original attachment.
+Every request requires the same authenticated exact audience access. Scheduled
+expiry and retirement exclude both retrieval and downloads, including forms.
+KnowledgePage provides upload, manual status refresh, exact-page review,
+publication, withdrawal, citation search and authenticated original downloads.
+Quarantine and originals in PostgreSQL remain sensitive: provision DB encryption,
+role restrictions, storage quotas, retention, backups and operational monitoring
+before production acceptance. Full-text retrieval is implemented; semantic/vector
+retrieval remains disabled pending the separately documented provider gates.
+
+
+Trusted assisted-answer adapters may call `SynchronizeActor(ctx, db, cfg, actor)`
+with the actor obtained from `api.ActorFrom`. This replaces durable knowledge
+grants with the intersection of that actor's exact permissions/audiences and
+the current host resolver. Call it before retrieval and recheck current host
+access after inference. It is not an administration API or an HTTP body format.
+`RetrieveCandidates` preserves the same durable authorization and source checks
+while broadening lexical question recall to OR terms, removing common English
+question stop words, and capping queries at 64 distinct terms and 20 pages. It
+provides lexical candidates for a separately configured reranker; it does not
+claim semantic search or an embedding implementation.
+
+Verified employee channels use EnsureVerifiedReader for one exact read audience with a current eligibility authorizer on each retrieval and after inference. This trusted owner port grants no operator MFA, review or publication permission. Its employee: principal namespace is separate from operator UUID identities.

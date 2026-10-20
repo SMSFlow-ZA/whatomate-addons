@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // PostgresRepository stores only extension-owned records. A distinct tenant is
@@ -14,6 +15,7 @@ import (
 type PostgresRepository struct {
 	db     *sql.DB
 	tenant string
+	tx     *sql.Tx
 }
 
 func NewPostgresRepository(db *sql.DB, tenant string) (*PostgresRepository, error) {
@@ -23,11 +25,11 @@ func NewPostgresRepository(db *sql.DB, tenant string) (*PostgresRepository, erro
 	return &PostgresRepository{db: db, tenant: tenant}, nil
 }
 func (r *PostgresRepository) Migrate(ctx context.Context) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer r.rollback(tx)
 	// Serialize this package's schema migration across instances.
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(19631020)"); err != nil {
 		return err
@@ -56,7 +58,7 @@ func (r *PostgresRepository) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return r.commit(tx)
 }
 func (r *PostgresRepository) authorize(ctx context.Context, tx *sql.Tx, actor, action, scope string) error {
 	if strings.TrimSpace(actor) == "" {
@@ -77,11 +79,11 @@ func (r *PostgresRepository) Publish(ctx context.Context, actor string, d Docume
 	if err != nil {
 		return err
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer r.rollback(tx)
 	if err = r.authorize(ctx, tx, actor, "publish", "*"); err != nil {
 		return err
 	}
@@ -121,14 +123,14 @@ func (r *PostgresRepository) Publish(ctx context.Context, actor string, d Docume
 			return err
 		}
 	}
-	return tx.Commit()
+	return r.commit(tx)
 }
 func (r *PostgresRepository) Retire(ctx context.Context, actor, id, version string) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer r.rollback(tx)
 	if err = r.authorize(ctx, tx, actor, "retire", "*"); err != nil {
 		return err
 	}
@@ -143,34 +145,70 @@ func (r *PostgresRepository) Retire(ctx context.Context, actor, id, version stri
 	if n != 1 {
 		return ErrDenied
 	}
-	return tx.Commit()
+	return r.commit(tx)
 }
 
 // Retrieve checks a transaction-locked durable read grant as well as the host
 // authorizer. Current versions are chosen before withdrawal/audience filtering.
 func (r *PostgresRepository) Retrieve(ctx context.Context, q Query, auth Authorizer) ([]Source, error) {
+	return r.retrieve(ctx, q, auth, false)
+}
+
+// RetrieveCandidates broadens lexical recall for questions while preserving
+// every authoritative access/current-version/provenance check. It is bounded
+// lexical retrieval, not an embedding or semantic search implementation.
+func (r *PostgresRepository) RetrieveCandidates(ctx context.Context, q Query, auth Authorizer) ([]Source, error) {
+	return r.retrieve(ctx, q, auth, true)
+}
+
+func (r *PostgresRepository) retrieve(ctx context.Context, q Query, auth Authorizer, candidates bool) ([]Source, error) {
 	if auth == nil || q.Principal == "" || q.Audience == "" || q.At.IsZero() || strings.TrimSpace(q.Text) == "" || len(q.Text) > 4096 || !auth.Allowed(ctx, q.Principal, q.Audience) {
 		return nil, nil
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer r.rollback(tx)
 	if err = r.authorize(ctx, tx, q.Principal, "read", q.Audience); err != nil {
 		if errors.Is(err, ErrDenied) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `WITH current AS (
+	queryText := q.Text
+	queryFunction := "plainto_tsquery"
+	if candidates {
+		stop := map[string]bool{}
+		for _, word := range strings.Fields("a an and are as at be by can could did do does for from had has have how i in is it me my of on or our should that the their them there these they this to us was we were what when where which who why will with would you your") {
+			stop[word] = true
+		}
+		terms := []string{}
+		seen := map[string]bool{}
+		for _, word := range strings.FieldsFunc(strings.ToLower(q.Text), func(c rune) bool { return !unicode.IsLetter(c) && !unicode.IsDigit(c) }) {
+			if stop[word] || seen[word] {
+				continue
+			}
+			seen[word] = true
+			terms = append(terms, "'"+word+"'")
+			if len(terms) == 64 {
+				break
+			}
+		}
+		if len(terms) == 0 {
+			return []Source{}, nil
+		}
+		queryText = strings.Join(terms, " | ")
+		queryFunction = "to_tsquery"
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`WITH current AS (
  SELECT DISTINCT ON(document_id) document_id,version,document,evidence,approval,manifest_hash,retired,withdraw_at
  FROM addon_knowledge_publications WHERE tenant=$1 AND effective_at <= $2 ORDER BY document_id,effective_at DESC)
  SELECT c.document,c.evidence,c.approval,c.manifest_hash,p.page_number,p.page_text,p.extraction_method,p.extractor_revision
  FROM current c JOIN addon_knowledge_pages p ON p.tenant=$1 AND p.document_id=c.document_id AND p.version=c.version
  WHERE NOT c.retired AND (c.withdraw_at IS NULL OR c.withdraw_at>$2) AND (c.document->'Audiences') ? $3
- AND p.search @@ plainto_tsquery('simple',$4)
- ORDER BY ts_rank_cd(p.search,plainto_tsquery('simple',$4)) DESC,c.document_id,p.page_number LIMIT 20`, r.tenant, q.At, q.Audience, q.Text)
+ AND p.search @@ %s('simple',$4)
+ ORDER BY ts_rank_cd(p.search,%s('simple',$4)) DESC,c.document_id,p.page_number LIMIT 20`, queryFunction, queryFunction), r.tenant, q.At, q.Audience, queryText)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +244,7 @@ func (r *PostgresRepository) Retrieve(ctx context.Context, q Query, auth Authori
 	if err != nil {
 		return nil, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = r.commit(tx); err != nil {
 		return nil, err
 	}
 	return sources, nil
@@ -218,11 +256,11 @@ func (r *PostgresRepository) Approve(ctx context.Context, reviewer string, d Doc
 	if d.ID == "" || d.Version == "" {
 		return Approval{}, ErrDenied
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.begin(ctx)
 	if err != nil {
 		return Approval{}, err
 	}
-	defer tx.Rollback()
+	defer r.rollback(tx)
 	if err = r.authorize(ctx, tx, reviewer, "review", "*"); err != nil {
 		return Approval{}, err
 	}
@@ -231,8 +269,28 @@ func (r *PostgresRepository) Approve(ctx context.Context, reviewer string, d Doc
 	if err != nil {
 		return Approval{}, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = r.commit(tx); err != nil {
 		return Approval{}, err
 	}
 	return a, nil
+}
+
+// HTTP lifecycle operations share the job's transaction so artifact state and
+// publication/approval/retirement commit atomically.
+func (r *PostgresRepository) begin(ctx context.Context) (*sql.Tx, error) {
+	if r.tx != nil {
+		return r.tx, nil
+	}
+	return r.db.BeginTx(ctx, nil)
+}
+func (r *PostgresRepository) rollback(tx *sql.Tx) {
+	if r.tx == nil {
+		_ = tx.Rollback()
+	}
+}
+func (r *PostgresRepository) commit(tx *sql.Tx) error {
+	if r.tx != nil {
+		return nil
+	}
+	return tx.Commit()
 }

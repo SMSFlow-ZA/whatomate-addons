@@ -59,18 +59,45 @@ type Grant struct {
 	Permission             Permission
 }
 type Principal struct {
-	ID     string
-	Grants []Grant
+	ID      string
+	Grants  []Grant
+	Aliases []string `json:"aliases,omitempty"`
 }
+
+func (p Principal) matches(id string) bool {
+	if p.ID == id && id != "" {
+		return true
+	}
+	for _, alias := range p.Aliases {
+		if alias != "" && alias == id {
+			return true
+		}
+	}
+	return false
+}
+
 type Event struct {
-	Version                uint64
-	ActorID                string
-	From, To               State
-	Reason                 string
-	RecordedAt, OccurredAt time.Time
-	OrganizationID, UnitID string
+	ParticipantLinks         []Participant
+	Kind                     string
+	CategoryFrom, CategoryTo string
+	Assignments              []Assignment
+	Version                  uint64
+	ActorID                  string
+	From, To                 State
+	Reason                   string
+	RecordedAt, OccurredAt   time.Time
+	OrganizationID, UnitID   string
 }
+type Classification struct {
+	Zone       string `json:"zone"`
+	Department string `json:"department"`
+	CaseType   string `json:"case_type"`
+}
+
 type Case struct {
+	Snapshot            Classification
+	Narrative, Category string
+
 	ID, OrganizationID, UnitID, ContactID string
 	State                                 State
 	Version                               uint64
@@ -105,7 +132,7 @@ func scoped(p Principal, c Case, permission Permission) bool {
 }
 func subject(p Principal, c Case) bool {
 	for _, v := range c.Participants {
-		if v.ID == p.ID && v.Role == Subject {
+		if p.matches(v.ID) && v.Role == Subject {
 			return true
 		}
 	}
@@ -113,7 +140,7 @@ func subject(p Principal, c Case) bool {
 }
 func assigned(p Principal, c Case) bool {
 	for _, a := range c.Assignments {
-		if a.ID == p.ID && (a.Role == Handler || a.Role == Supervisor) {
+		if p.matches(a.ID) && (a.Role == Handler || a.Role == Supervisor) {
 			return true
 		}
 	}
@@ -121,7 +148,7 @@ func assigned(p Principal, c Case) bool {
 }
 func complainant(p Principal, c Case) bool {
 	for _, v := range c.Participants {
-		if v.ID == p.ID && v.Role == Complainant {
+		if p.matches(v.ID) && v.Role == Complainant {
 			return true
 		}
 	}
@@ -178,7 +205,7 @@ func Transition(c Case, p Principal, expected uint64, to State, reason string, r
 	if (c.State == Resolved || c.State == Closed) && to == InProgress {
 		next.ReopenReason = reason
 	}
-	next.Events = append(next.Events, Event{Version: next.Version, ActorID: p.ID, From: c.State, To: to, Reason: reason, RecordedAt: recorded.UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
+	next.Events = append(next.Events, Event{Kind: "lifecycle", Version: next.Version, ActorID: p.ID, From: c.State, To: to, Reason: reason, RecordedAt: recorded.UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
 	return next, nil
 }
 
@@ -202,5 +229,9 @@ func clone(c Case) Case {
 	c.Participants = append([]Participant(nil), c.Participants...)
 	c.Assignments = append([]Assignment(nil), c.Assignments...)
 	c.Events = append([]Event(nil), c.Events...)
+	for i := range c.Events {
+		c.Events[i].ParticipantLinks = append([]Participant(nil), c.Events[i].ParticipantLinks...)
+		c.Events[i].Assignments = append([]Assignment(nil), c.Events[i].Assignments...)
+	}
 	return c
 }

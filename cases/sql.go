@@ -29,6 +29,7 @@ func (r *SQLRepository) Migrate(ctx context.Context) error {
 		return e
 	}
 	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS addon_cases_schema (version integer PRIMARY KEY, installed_at timestamptz NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS addon_cases_case (id text PRIMARY KEY, organization_id text NOT NULL, unit_id text NOT NULL, contact_id text NOT NULL, version bigint NOT NULL CHECK(version>0), payload jsonb NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS addon_cases_contact_idx ON addon_cases_case(organization_id,contact_id)`,
 		`CREATE TABLE IF NOT EXISTS addon_cases_intake (organization_id text NOT NULL, intake_key text NOT NULL, fingerprint text NOT NULL, case_id text NOT NULL REFERENCES addon_cases_case(id), PRIMARY KEY(organization_id,intake_key))`,
@@ -38,6 +39,9 @@ func (r *SQLRepository) Migrate(ctx context.Context) error {
 		if _, e = tx.ExecContext(ctx, statement); e != nil {
 			return e
 		}
+	}
+	if _, e = tx.ExecContext(ctx, `INSERT INTO addon_cases_schema(version) VALUES(1),(2) ON CONFLICT DO NOTHING`); e != nil {
+		return e
 	}
 	return tx.Commit()
 }
@@ -135,7 +139,7 @@ func (t *sqlTransaction) Save(ctx context.Context, c Case, expected uint64) erro
 	if e != nil {
 		return e
 	}
-	result, e := t.tx.ExecContext(ctx, `UPDATE addon_cases_case SET version=$1,payload=$2 WHERE id=$3 AND version=$4 AND organization_id=$5 AND unit_id=$6 AND contact_id=$7`, c.Version, string(payload), c.ID, expected, c.OrganizationID, c.UnitID, c.ContactID)
+	result, e := t.tx.ExecContext(ctx, `UPDATE addon_cases_case SET version=$1,payload=$2 WHERE id=$3 AND version=$4 AND organization_id=$5 AND unit_id=$6 AND contact_id=$7 AND COALESCE(payload->'Snapshot','{"zone":"","department":"","case_type":""}'::jsonb)=COALESCE($2::jsonb->'Snapshot','null'::jsonb)`, c.Version, string(payload), c.ID, expected, c.OrganizationID, c.UnitID, c.ContactID)
 	if e != nil {
 		return e
 	}

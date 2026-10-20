@@ -45,10 +45,17 @@ type Facts struct {
 	Messages, Enquiries []Activity
 }
 type Report struct {
-	NewCases, ResolvedCreatedInPeriod, Backlog, Messages, Enquiries int
-	ByZone, ByDepartment, ByCaseType                                map[string]int
-	Partial                                                         bool
+	NewCases                int            `json:"new_cases"`
+	ResolvedCreatedInPeriod int            `json:"resolved_created_in_period"`
+	Backlog                 int            `json:"backlog"`
+	Messages                int            `json:"messages"`
+	Enquiries               int            `json:"enquiries"`
+	ByZone                  map[string]int `json:"by_zone"`
+	ByDepartment            map[string]int `json:"by_department"`
+	ByCaseType              map[string]int `json:"by_case_type"`
+	Partial                 bool           `json:"partial"`
 }
+
 type Cell struct {
 	Label      string `json:"label"`
 	Value      *int   `json:"value"`
@@ -57,13 +64,16 @@ type Cell struct {
 
 // BoardReport contains no case IDs, narratives, people or drilldown links.
 type BoardReport struct {
-	NewCases                         *int `json:"new_cases"`
-	Backlog                          *int `json:"backlog"`
-	Resolved                         *int `json:"resolved"`
-	Messages                         *int `json:"messages"`
-	Enquiries                        *int `json:"enquiries"`
-	ByZone, ByDepartment, ByCaseType []Cell
-	Partial, Suppressed              bool
+	NewCases     *int   `json:"new_cases"`
+	Backlog      *int   `json:"backlog"`
+	Resolved     *int   `json:"resolved_created_in_period"`
+	Messages     *int   `json:"messages"`
+	Enquiries    *int   `json:"enquiries"`
+	ByZone       []Cell `json:"by_zone"`
+	ByDepartment []Cell `json:"by_department"`
+	ByCaseType   []Cell `json:"by_case_type"`
+	Partial      bool   `json:"partial"`
+	Suppressed   bool   `json:"suppressed"`
 }
 
 func validate(a Actor, f Facts, w Window) error {

@@ -44,10 +44,10 @@ type cell struct {
 	Inline    xmlText `xml:"is"`
 }
 
-// ReadXLSX reads only the explicitly selected local worksheet ZIP entry.
-// It never follows relationships, opens URLs, or evaluates formulas/macros.
+// ReadXLSX accepts a visible worksheet name or an explicit local worksheet ZIP entry.
+// Names resolve through bounded local metadata. It never opens URLs or evaluates formulas/macros.
 func ReadXLSX(r io.ReaderAt, size int64, sheet string, l Limits) ([][]string, error) {
-	if !l.valid() || size <= 0 || size > l.MaxFileBytes || !strings.HasPrefix(sheet, "xl/worksheets/") || path.Clean(sheet) != sheet || !strings.HasSuffix(sheet, ".xml") {
+	if !l.valid() || size <= 0 || size > l.MaxFileBytes || sheet == "" || len(sheet) > 256 || (strings.HasPrefix(sheet, "xl/worksheets/") && (path.Clean(sheet) != sheet || !strings.HasSuffix(sheet, ".xml"))) {
 		return nil, errors.New("invalid workbook bounds or worksheet")
 	}
 	z, err := zip.NewReader(r, size)
@@ -88,6 +88,12 @@ func ReadXLSX(r io.ReaderAt, size int64, sheet string, l Limits) ([][]string, er
 			return nil, errors.New("entry exceeds bound")
 		}
 		return b, e
+	}
+	if !strings.HasPrefix(sheet, "xl/worksheets/") {
+		sheet, err = resolveWorksheetName(read, sheet)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var shared []string
 	if files["xl/sharedStrings.xml"] != nil {
@@ -254,3 +260,110 @@ var ErrLegacyXLSUnsupported = errors.New("legacy binary XLS requires an explicit
 // ReadXLS fails explicitly; XLS bytes must never be interpreted as XLSX or CSV.
 // Legacy XLS support is a production readiness gap, not a successful import.
 func ReadXLS(io.ReaderAt, int64, Limits) ([][]string, error) { return nil, ErrLegacyXLSUnsupported }
+
+// resolveWorksheetName accepts only in-package relationship targets. The read
+// callback retains the archive-wide expansion and per-entry decompression bounds.
+func resolveWorksheetName(read func(string) ([]byte, error), selected string) (string, error) {
+	const relationshipNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+	const worksheetType = relationshipNamespace + "/worksheet"
+	invalid := errors.New("invalid or ambiguous worksheet metadata")
+	workbook, err := read("xl/workbook.xml")
+	if err != nil {
+		return "", err
+	}
+	relations, err := read("xl/_rels/workbook.xml.rels")
+	if err != nil {
+		return "", err
+	}
+	type attributes struct {
+		Attrs []xml.Attr `xml:",any,attr"`
+	}
+	var book struct {
+		XMLName xml.Name     `xml:"workbook"`
+		Sheets  []attributes `xml:"sheets>sheet"`
+	}
+	var rels struct {
+		XMLName xml.Name     `xml:"Relationships"`
+		Items   []attributes `xml:"Relationship"`
+	}
+	if xml.Unmarshal(workbook, &book) != nil || xml.Unmarshal(relations, &rels) != nil || len(book.Sheets) == 0 {
+		return "", invalid
+	}
+	attrs := func(all []xml.Attr) (map[string]xml.Attr, bool) {
+		values := map[string]xml.Attr{}
+		for _, a := range all {
+			// Namespace declarations can repeat local names of ordinary attributes.
+			if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
+				continue
+			}
+			if _, exists := values[a.Name.Local]; exists {
+				return nil, false
+			}
+			values[a.Name.Local] = a
+		}
+		return values, true
+	}
+	targets := map[string]string{}
+	types := map[string]string{}
+	worksheetTargets := map[string]bool{}
+	for _, item := range rels.Items {
+		a, ok := attrs(item.Attrs)
+		if !ok {
+			return "", invalid
+		}
+		id, target, kind := a["Id"].Value, a["Target"].Value, a["Type"].Value
+		if id == "" || len(id) > 256 || target == "" || len(target) > 1024 || kind == "" || (a["TargetMode"].Value != "" && a["TargetMode"].Value != "Internal") {
+			return "", invalid
+		}
+		if _, exists := targets[id]; exists {
+			return "", invalid
+		}
+		// URI syntax, encoded path separators and traversal are never package paths.
+		if strings.ContainsAny(target, `\:%?#`) || strings.ContainsAny(target, "\r\n\t") || strings.HasPrefix(target, "//") {
+			return "", invalid
+		}
+		for _, part := range strings.Split(target, "/") {
+			if part == "." || part == ".." {
+				return "", invalid
+			}
+		}
+		entry := strings.TrimPrefix(target, "/")
+		if !strings.HasPrefix(target, "/") {
+			entry = "xl/" + target
+		}
+		if path.Clean(entry) != entry || !strings.HasPrefix(entry, "xl/") {
+			return "", invalid
+		}
+		if kind == worksheetType {
+			if !strings.HasPrefix(entry, "xl/worksheets/") || !strings.HasSuffix(entry, ".xml") || worksheetTargets[entry] {
+				return "", invalid
+			}
+			worksheetTargets[entry] = true
+		}
+		targets[id] = entry
+		types[id] = kind
+	}
+	names, ids, refs := map[string]bool{}, map[int]bool{}, map[string]bool{}
+	result := ""
+	for _, sheet := range book.Sheets {
+		a, ok := attrs(sheet.Attrs)
+		if !ok {
+			return "", invalid
+		}
+		name, ref := a["name"].Value, a["id"]
+		number, e := strconv.Atoi(a["sheetId"].Value)
+		if name == "" || len(name) > 256 || e != nil || number <= 0 || ref.Name.Space != relationshipNamespace || ref.Value == "" || names[strings.ToLower(name)] || ids[number] || refs[ref.Value] || types[ref.Value] != worksheetType {
+			return "", invalid
+		}
+		names[strings.ToLower(name)] = true
+		ids[number] = true
+		refs[ref.Value] = true
+		if name == selected {
+			result = targets[ref.Value]
+		}
+	}
+	if result == "" {
+		return "", errors.New("worksheet name not found")
+	}
+	return result, nil
+}

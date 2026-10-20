@@ -98,7 +98,11 @@ func TestProviderRejectsRedirectModelMismatchAndTimeout(t *testing.T) {
 				}
 			}))
 			defer s.Close()
-			c := ProviderConfig{Endpoint: s.URL, AllowedEndpoints: []string{s.URL}, DeploymentAttestation: "review-1", Country: "ZA", Model: "pinned-1", PromptRevision: "prompt-1", Timeout: 10 * time.Millisecond, MaxResponseBytes: 4096}
+			timeout := time.Second
+			if mode == "timeout" {
+				timeout = 10 * time.Millisecond
+			}
+			c := ProviderConfig{Endpoint: s.URL, AllowedEndpoints: []string{s.URL}, DeploymentAttestation: "review-1", Country: "ZA", Model: "pinned-1", PromptRevision: "prompt-1", Timeout: timeout, MaxResponseBytes: 4096}
 			p, err := newProvider(c, s.Client().Transport)
 			if err != nil {
 				t.Fatal(err)

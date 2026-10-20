@@ -1,0 +1,74 @@
+name: whatomate-synthetic-local
+services:
+  db:
+    image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: synthetic_local
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?run initialize.ps1}
+      POSTGRES_DB: whatomate_synthetic_local
+    volumes: ["db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U synthetic_local -d whatomate_synthetic_local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: [redis-server, --save, "", --appendonly, "no"]
+  app:
+    image: golang@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade
+    working_dir: /workspace/whatomate-addons-host
+    command: [sh, -c, "go build -o /tmp/whatomate ./cmd/whatomate && exec /tmp/whatomate server -config /run/config/host.toml -migrate -workers 0"]
+    depends_on:
+      db: {condition: service_healthy}
+    ports: ["127.0.0.1:18280:8080"]
+    volumes:
+      - ${HOST_SOURCE:?}:/workspace/whatomate-addons-host
+      - ${ADDONS_SOURCE:?}:/workspace/whatomate-addons
+      - ${PRIVATE_RUNTIME:?}:/run/config:ro
+      - gomod:/go/pkg/mod
+      - gobuild:/root/.cache/go-build
+      - media:/runtime/media
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  seed:
+    profiles: [tools]
+    image: golang@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade
+    working_dir: /workspace/whatomate-addons-host
+    command: [sh, -c, "gofmt -w cmd/extensions-seed && go run ./cmd/extensions-seed"]
+    environment: {SYNTHETIC_LOCAL_ONLY: "true"}
+    depends_on:
+      db: {condition: service_healthy}
+    volumes:
+      - ${HOST_SOURCE:?}:/workspace/whatomate-addons-host
+      - ${ADDONS_SOURCE:?}:/workspace/whatomate-addons
+      - ${PRIVATE_RUNTIME:?}:/run/config:ro
+      - ${PRIVATE_RUNTIME:?}:/run/private
+      - gomod:/go/pkg/mod
+      - gobuild:/root/.cache/go-build
+  controller:
+    profiles: [processing]
+    build:
+      context: ../..
+      dockerfile: workers/knowledge/Dockerfile
+    environment:
+      SYNTHETIC_LOCAL_ONLY: "true"
+      DATABASE_URL: postgres://synthetic_local:${LOCAL_DB_PASSWORD}@db:5432/whatomate_synthetic_local?sslmode=disable
+    volumes:
+      - controllerconfig:/run/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - documentjobs:/var/lib/docker/volumes/whatomate-addons-docjobs/_data
+      - definitions:/var/lib/docker/volumes/whatomate-addons-clamav/_data:ro
+volumes:
+  db:
+  media:
+  gomod:
+  gobuild:
+  documentjobs:
+    external: true
+    name: whatomate-addons-docjobs
+  definitions:
+    external: true
+    name: whatomate-addons-clamav
+  controllerconfig:
+    external: true
+    name: whatomate-synthetic-local-controllerconfig

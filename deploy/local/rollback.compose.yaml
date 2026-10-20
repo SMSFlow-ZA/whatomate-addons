@@ -1,0 +1,24 @@
+# Separate loopback rehearsal; never routes requests to the active local app.
+name: whatomate-synthetic-rollback
+services:
+  rollbackredis:
+    image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: [redis-server, --save, "", --appendonly, "no"]
+    networks:
+      rollback: {}
+  rollbackapp:
+    image: golang@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade
+    command: [/run/release/whatomate, server, -config, /run/release/host.toml, -workers, "0"]
+    ports: ["127.0.0.1:18281:8080"]
+    volumes:
+      - ${ROLLBACK_RELEASE:?}:/run/release:ro
+    tmpfs: [/runtime/media, /tmp]
+    depends_on: [rollbackredis]
+    networks: [local, rollback]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+networks:
+  rollback:
+    internal: true
+  local:
+    external: true
+    name: whatomate-synthetic-local_default

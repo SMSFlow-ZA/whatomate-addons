@@ -1,5 +1,5 @@
-// Package governance maintains reference-only record policies and a deletion /
-// restore journal. It performs no physical deletion or provider messaging.
+// Package governance maintains record policies, governed physical owner ports
+// and a deletion/restore journal. It performs no provider messaging.
 package governance
 
 import (
@@ -19,18 +19,23 @@ func (s Scope) valid() bool { return s.OrganizationID != "" && s.UnitID != "" }
 type Source string
 
 const (
-	Core      Source = "core"
-	Case      Source = "case"
-	Knowledge Source = "knowledge"
-	Vector    Source = "vector"
-	Audit     Source = "audit"
-	Backup    Source = "backup"
-	Provider  Source = "provider"
+	Core           Source = "core"
+	Case           Source = "case"
+	Knowledge      Source = "knowledge"
+	Vector         Source = "vector"
+	Audit          Source = "audit"
+	Backup         Source = "backup"
+	Provider       Source = "provider"
+	Report         Source = "report"
+	Directory      Source = "directory"
+	Conversation   Source = "conversation"
+	AssistedAnswer Source = "ai"
+	WorkerFile     Source = "worker_file"
 )
 
 func (s Source) valid() bool {
 	switch s {
-	case Core, Case, Knowledge, Vector, Audit, Backup, Provider:
+	case Core, Case, Knowledge, Vector, Audit, Backup, Provider, Report, Directory, Conversation, AssistedAnswer, WorkerFile:
 		return true
 	}
 	return false
@@ -221,7 +226,7 @@ func stateFor(r Record, rules []Rule, holds []Hold, now time.Time) JournalState 
 	if now.Before(r.RetainUntil) || now.Before(r.CreatedAt.Add(rule.MinimumRetention)) {
 		return BlockedRetention
 	}
-	if r.Source == Backup || r.Source == Provider {
+	if r.Source == Backup || r.Source == Provider || r.Source == WorkerFile {
 		return AwaitingExpiry
 	}
 	return Pending

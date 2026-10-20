@@ -100,7 +100,7 @@ func (t *memoryTx) Save(ctx context.Context, c Case, expected uint64) error {
 	if old.Version != expected || c.Version != expected+1 {
 		return ErrConflict
 	}
-	if c.OrganizationID != old.OrganizationID || c.UnitID != old.UnitID || c.ContactID != old.ContactID {
+	if c.OrganizationID != old.OrganizationID || c.UnitID != old.UnitID || c.ContactID != old.ContactID || c.Snapshot != old.Snapshot {
 		return ErrInvalid
 	}
 	t.cases[c.ID] = clone(c)

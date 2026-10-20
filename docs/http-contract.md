@@ -30,3 +30,5 @@ stable case/version IDs and recorded/occurred timestamps. Reports use the case
 package's authorized event/fact API, never another package's private SQL tables.
 Workers use trusted immutable job/input/output hash linkage. Unknown processing,
 commit or provider outcomes remain explicit; no claim of successful completion.
+
+The compiled host's canonical case collection URL ends in a slash: `/api/extensions/cases/`. Clients must POST directly to that URL so an HTTP redirect cannot change the method. Single-record/action URLs remain unsuffixed.

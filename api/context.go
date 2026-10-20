@@ -26,12 +26,16 @@ type Actor struct {
 	MFA                               bool
 	Permissions                       []string
 	Grants                            []Grant
+	// Aliases are verified, historical identity links loaded by AccessStore.
+	// They are not accepted from HTTP input or used to grant a permission.
+	Aliases []string
 }
 type actorKey struct{}
 
 func clone(a Actor) Actor {
 	a.Permissions = append([]string(nil), a.Permissions...)
 	a.Grants = append([]Grant(nil), a.Grants...)
+	a.Aliases = append([]string(nil), a.Aliases...)
 	return a
 }
 func WithActor(ctx context.Context, a Actor) context.Context {

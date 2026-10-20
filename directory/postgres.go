@@ -65,6 +65,17 @@ func (s *PostgresStore) Load(ctx context.Context) (Snapshot, error) {
 	return snapshot, nil
 }
 func (s *PostgresStore) CompareAndSwap(ctx context.Context, expected uint64, next Snapshot) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = s.compareAndSwapTx(ctx, tx, expected, next); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *PostgresStore) compareAndSwapTx(ctx context.Context, tx *sql.Tx, expected uint64, next Snapshot) error {
 	if expected >= math.MaxInt64 || next.Version != expected+1 {
 		return ErrConflict
 	}
@@ -72,11 +83,6 @@ func (s *PostgresStore) CompareAndSwap(ctx context.Context, expected uint64, nex
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	var result sql.Result
 	if expected == 0 {
 		result, err = tx.ExecContext(ctx, `INSERT INTO directory_snapshots(tenant,version,payload) VALUES($1,$2,$3::jsonb) ON CONFLICT(tenant) DO NOTHING`, s.tenant, int64(next.Version), string(payload))
@@ -93,8 +99,6 @@ func (s *PostgresStore) CompareAndSwap(ctx context.Context, expected uint64, nex
 	if count != 1 {
 		return ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO directory_events(tenant,version,actor) VALUES($1,$2,$3)`, s.tenant, int64(next.Version), s.actor); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = tx.ExecContext(ctx, `INSERT INTO directory_events(tenant,version,actor) VALUES($1,$2,$3)`, s.tenant, int64(next.Version), s.actor)
+	return err
 }

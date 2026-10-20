@@ -74,6 +74,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var manifest documents.JobManifest
+	if err = decode("/input/job.json", 4096, &manifest); err != nil {
+		return err
+	}
+	if err = documents.ValidateJobManifest(manifest, input, metadata); err != nil {
+		return err
+	}
 	out, err := worker.Process(context.Background(), input, metadata)
 	if err != nil {
 		return err
@@ -88,7 +95,7 @@ func run() error {
 		f.Close()
 		return err
 	}
-	if err = json.NewEncoder(f).Encode(out); err != nil {
+	if err = json.NewEncoder(f).Encode(documents.JobArtifact{JobManifest: manifest, Output: out}); err != nil {
 		f.Close()
 		return err
 	}

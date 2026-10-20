@@ -32,7 +32,7 @@ type Result struct {
 
 func fallback() Result { return Result{Text: FixedResponse, Handoff: true} }
 func answer(ctx context.Context, g Generator, r Request) Result {
-	if g == nil || strings.TrimSpace(r.Question) == "" || len(r.Sources) == 0 {
+	if g == nil || unsupportedAuthorityRequest(r.Question) || strings.TrimSpace(r.Question) == "" || len(r.Sources) == 0 {
 		return fallback()
 	}
 	available := map[string]knowledge.Source{}
@@ -45,7 +45,7 @@ func answer(ctx context.Context, g Generator, r Request) Result {
 	// Preserve an independent snapshot even when an adapter mutates its request.
 	r.Sources = append([]knowledge.Source(nil), r.Sources...)
 	out, err := g.Generate(ctx, r)
-	if err != nil || !out.Grounded || out.Inference || strings.TrimSpace(out.Answer) == "" || len(out.Citations) == 0 {
+	if err != nil || len(out.Answer) > maxEvidenceBytes || !out.Grounded || out.Inference || strings.TrimSpace(out.Answer) == "" || len(out.Citations) == 0 {
 		return fallback()
 	}
 	result := Result{Text: out.Answer}
@@ -83,7 +83,7 @@ type Service struct {
 }
 
 func (s Service) Answer(ctx context.Context, principal, audience, question string) Result {
-	if s.Catalog == nil || s.Now == nil {
+	if s.Catalog == nil || s.Now == nil || unsupportedAuthorityRequest(question) {
 		return fallback()
 	}
 	q := knowledge.Query{Principal: principal, Audience: audience, Text: question, At: s.Now()}

@@ -7,6 +7,8 @@ ARG GO_IMAGE
 RUN case "$GO_IMAGE" in *@sha256:*) ;; *) exit 1 ;; esac
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY api/ ./api/
+COPY governance/ ./governance/
 COPY knowledge/ ./knowledge/
 COPY documents/ ./documents/
 COPY workers/documents/ ./workers/documents/
