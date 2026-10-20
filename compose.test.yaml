@@ -21,6 +21,7 @@ services:
       - go-mod:/go/pkg/mod
       - go-build:/root/.cache/go-build
     environment:
+      API_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       DIRECTORY_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       CASES_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
       KNOWLEDGE_DATABASE_URL: postgres://addon_test:synthetic-test-only@db:5432/addons?sslmode=disable
