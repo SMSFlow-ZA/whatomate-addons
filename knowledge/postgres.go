@@ -116,6 +116,13 @@ func (r *PostgresRepository) Publish(ctx context.Context, actor string, d Docume
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO addon_knowledge_publications(tenant,document_id,version,effective_at,document,evidence,approval,manifest_hash,published_by,withdraw_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, r.tenant, d.ID, d.Version, d.Effective, document, evidence, approval, p.manifestHash, actor, withdrawAt)
 	if err != nil {
+		// Classify the database's atomic uniqueness decision, rather than a
+		// preflight query that can race another publisher. Other failures retain
+		// their original meaning (including an unknown commit outcome).
+		var state interface{ SQLState() string }
+		if errors.As(err, &state) && state.SQLState() == "23505" {
+			return ErrPublicationConflict
+		}
 		return err
 	}
 	for _, page := range p.document.Pages {

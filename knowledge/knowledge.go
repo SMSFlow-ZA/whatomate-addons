@@ -15,6 +15,10 @@ import (
 
 var ErrDenied = errors.New("knowledge operation denied")
 
+// ErrPublicationConflict means the immutable document version or effective
+// timestamp has already been published, including a subsequently retired edition.
+var ErrPublicationConflict = errors.New("knowledge publication conflicts with an existing edition")
+
 // Page records the extraction method and revision for a page of the original
 // content. OCR adapters must preserve original page numbering, including blanks.
 type Page struct {

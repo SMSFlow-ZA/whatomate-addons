@@ -352,6 +352,8 @@ func (h *httpHandler) job(w http.ResponseWriter, r *http.Request, id, action str
 	if e != nil {
 		if errors.Is(e, ErrDenied) {
 			api.Error(w, 403, "denied")
+		} else if errors.Is(e, ErrPublicationConflict) {
+			api.Error(w, 409, "publication_conflict")
 		} else {
 			api.Error(w, 503, "operation_outcome_unknown")
 		}
