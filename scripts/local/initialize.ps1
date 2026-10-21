@@ -21,7 +21,7 @@ host = "0.0.0.0"
 port = 8080
 read_timeout = 130
 write_timeout = 130
-allowed_origins = "http://synthetic-demo.localhost:18280,http://synthetic-demo.localhost:18573"
+allowed_origins = "http://127.0.0.1:18280,http://synthetic-demo.localhost:18280,http://synthetic-demo.localhost:18573"
 [database]
 host = "db"
 port = 5432
