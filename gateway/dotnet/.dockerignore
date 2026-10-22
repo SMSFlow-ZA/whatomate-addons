@@ -1,0 +1,9 @@
+**/bin
+**/obj
+**/Properties/launchSettings.json
+.env
+*.env
+*.key
+*.pfx
+*.pem
+*.crt

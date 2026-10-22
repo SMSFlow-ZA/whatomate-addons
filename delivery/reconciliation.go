@@ -16,14 +16,21 @@ type Reconciler struct {
 	SMSFallback *SMSFallbackConfig
 	Authorize   func(context.Context, Message) error
 }
-type DeliveryStatus struct{ IntentID, Account, ProviderID, State string }
+
+// DeliveryStatus is a trusted internal composition port. Identity bindings are
+// never employee-facing status DTO fields or evidence of consent/reading.
+type DeliveryStatus struct {
+	IntentID, Account, ProviderID, State string
+	EmployeeID                           string `json:"-"`
+	Sender                               string `json:"-"`
+}
 
 func ReadDeliveryStatus(ctx context.Context, db *sql.DB, tenant, id string) (DeliveryStatus, error) {
 	if db == nil || tenant == "" || id == "" {
 		return DeliveryStatus{}, ErrInvalid
 	}
 	var s DeliveryStatus
-	e := db.QueryRowContext(ctx, `SELECT id,payload->>'account',provider_id,state FROM addon_conversation_delivery WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&s.IntentID, &s.Account, &s.ProviderID, &s.State)
+	e := db.QueryRowContext(ctx, `SELECT id,payload->>'account',provider_id,state,COALESCE(payload->>'employee_id',''),COALESCE(payload->>'sender','') FROM addon_conversation_delivery WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&s.IntentID, &s.Account, &s.ProviderID, &s.State, &s.EmployeeID, &s.Sender)
 	if errors.Is(e, sql.ErrNoRows) {
 		return s, ErrInvalid
 	}

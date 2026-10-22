@@ -32,6 +32,7 @@ type Answer struct {
 }
 type HTTPConfig struct {
 	EnabledSyntheticDevelopment bool
+	ProcessingDisclosure        *ProcessingDisclosure
 	Freshness                   time.Duration
 	Clock                       func() time.Time
 	Aliases                     func(context.Context, string, string) ([]string, error)
@@ -47,15 +48,17 @@ type Service struct {
 	Config HTTPConfig
 }
 type Turn struct {
-	Phase          string               `json:"phase"`
-	EmployeeID     string               `json:"employee_id"`
-	Narrative      string               `json:"narrative"`
-	IntakeKey      string               `json:"intake_key"`
-	IntakeSnapshot cases.Classification `json:"intake_snapshot"`
-	Cases          []string             `json:"cases"`
-	Selected       string               `json:"selected,omitempty"`
-	Reply          string               `json:"reply"`
-	Citations      []string             `json:"citations,omitempty"`
+	ProcessingDisclosureKey      string               `json:"processing_disclosure_key,omitempty"`
+	ProcessingDisclosureIntentID string               `json:"processing_disclosure_intent_id,omitempty"`
+	Phase                        string               `json:"phase"`
+	EmployeeID                   string               `json:"employee_id"`
+	Narrative                    string               `json:"narrative"`
+	IntakeKey                    string               `json:"intake_key"`
+	IntakeSnapshot               cases.Classification `json:"intake_snapshot"`
+	Cases                        []string             `json:"cases"`
+	Selected                     string               `json:"selected,omitempty"`
+	Reply                        string               `json:"reply"`
+	Citations                    []string             `json:"citations,omitempty"`
 }
 
 func digest(v string) string { h := sha256.Sum256([]byte(v)); return hex.EncodeToString(h[:]) }
@@ -131,6 +134,9 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		}
 		var result Turn
 		e = json.Unmarshal(existing, &result)
+		if e == nil && result.EmployeeID != emp.ID {
+			return Turn{}, ErrDenied
+		}
 		if e == nil && result.Selected != "" {
 			if _, err := (cases.Service{Repository: &cases.SQLRepository{DB: s.DB}}).Read(ctx, p, result.Selected); err != nil {
 				return Turn{}, ErrDenied
@@ -166,6 +172,7 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 	turn = s.currentReferences(ctx, p, turn)
 	caseAck := false
 	enquiry := false
+	processingNotice := false
 	switch {
 	case turn.Phase == "narrative":
 		if len([]rune(message)) < 12 {
@@ -249,6 +256,14 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		enquiry = true
 		turn.Reply = "Reply LOG CASE to submit a concern, STATUS for your case, or ask an SOP question."
 		if s.Config.Advisor != nil {
+			ready, disclosureErr := s.advisoryDisclosureReady(ctx, in, &turn)
+			if disclosureErr != nil {
+				return Turn{}, disclosureErr
+			}
+			if !ready {
+				processingNotice = true
+				break
+			}
 			a := api.Actor{OrganizationID: in.Tenant, UserID: emp.ID, Aliases: p.Aliases}
 			answer, err := s.Config.Advisor(ctx, a, message)
 			if err == nil && !answer.Handoff && len(answer.Citations) > 0 && answer.Text != "" {
@@ -296,7 +311,11 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		return Turn{}, e
 	}
 	if !caseAck {
-		e = delivery.Enqueue(ctx, tx, delivery.Message{ID: digest(in.Tenant + "\x00" + in.Account + "\x00" + in.ProviderMessageID), Tenant: in.Tenant, Account: in.Account, Sender: in.Sender, EmployeeID: emp.ID, CaseID: turn.Selected, Text: turn.Reply})
+		replyCase := turn.Selected
+		if processingNotice {
+			replyCase = ""
+		}
+		e = delivery.Enqueue(ctx, tx, delivery.Message{ID: digest(in.Tenant + "\x00" + in.Account + "\x00" + in.ProviderMessageID), Tenant: in.Tenant, Account: in.Account, Sender: in.Sender, EmployeeID: emp.ID, CaseID: replyCase, Text: turn.Reply})
 		if e != nil {
 			return Turn{}, e
 		}

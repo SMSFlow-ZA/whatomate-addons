@@ -5,6 +5,7 @@ import (
 	"github.com/SMSFlow-ZA/whatomate-addons/knowledge"
 	"math"
 	"sort"
+	"strings"
 )
 
 type CandidateRetriever interface {
@@ -14,12 +15,18 @@ type Embedder interface {
 	Embed(context.Context, []string) ([][]float64, error)
 }
 
-// HybridRetriever uses the existing FTS result first. Semantic fallback only
-// ranks authorized current candidates returned by the same governed catalog.
+type VectorRetriever interface {
+	RetrieveVector(context.Context, knowledge.Query, knowledge.Authorizer, []float64) ([]knowledge.Source, error)
+}
+
+// HybridRetriever uses FTS first. With Vectors configured it embeds only the
+// query and delegates native search/current authorization to that repository.
+// Otherwise the legacy fallback reranks governed lexical candidates in memory.
 type HybridRetriever struct {
 	Catalog    Retriever
 	Candidates CandidateRetriever
 	Embeddings Embedder
+	Vectors    VectorRetriever
 }
 
 func (h HybridRetriever) Retrieve(ctx context.Context, q knowledge.Query, a knowledge.Authorizer) ([]knowledge.Source, error) {
@@ -29,6 +36,19 @@ func (h HybridRetriever) Retrieve(ctx context.Context, q knowledge.Query, a know
 	sources, e := h.Catalog.Retrieve(ctx, q, a)
 	if e != nil || len(sources) > 0 {
 		return sources, e
+	}
+	if h.Vectors != nil {
+		if a == nil || q.Principal == "" || q.Audience == "" || q.At.IsZero() || strings.TrimSpace(q.Text) == "" || len(q.Text) > 4096 || !a.Allowed(ctx, q.Principal, q.Audience) {
+			return nil, nil
+		}
+		if h.Embeddings == nil {
+			return nil, ErrProvider
+		}
+		vectors, err := h.Embeddings.Embed(ctx, []string{q.Text})
+		if err != nil || len(vectors) != 1 {
+			return nil, ErrProvider
+		}
+		return h.Vectors.RetrieveVector(ctx, q, a, vectors[0])
 	}
 	if h.Candidates == nil || h.Embeddings == nil {
 		return sources, nil

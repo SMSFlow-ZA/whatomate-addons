@@ -18,10 +18,12 @@ type ProviderConfig struct {
 	Endpoint         string
 	AllowedEndpoints []string
 	// DeploymentAttestation is an externally reviewed deployment evidence reference,
-	// covering processing, storage, monitoring and support access in South Africa.
+	// covering storage/hosting in South Africa and the declared processing scope.
 	DeploymentAttestation, Country, Model, PromptRevision, APIKey string
-	Timeout                                                       time.Duration
-	MaxResponseBytes                                              int64
+	// Empty scope preserves the stricter existing South Africa-only contract.
+	ProcessingScope, InternationalProcessingApproval, InternationalProcessingDisclosure string
+	Timeout                                                                             time.Duration
+	MaxResponseBytes                                                                    int64
 }
 type Provider struct {
 	config ProviderConfig
@@ -34,6 +36,15 @@ func NewProvider(c ProviderConfig) (*Provider, error) {
 	return newProvider(c, transport)
 }
 func newProvider(c ProviderConfig, transport http.RoundTripper) (*Provider, error) {
+	if c.ProcessingScope == "" {
+		c.ProcessingScope = "za_only"
+	}
+	if c.ProcessingScope != "za_only" && c.ProcessingScope != "global_standard" {
+		return nil, ErrProvider
+	}
+	if c.ProcessingScope == "global_standard" && (strings.TrimSpace(c.InternationalProcessingApproval) == "" || strings.TrimSpace(c.InternationalProcessingDisclosure) == "") {
+		return nil, ErrProvider
+	}
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || c.Country != "ZA" || strings.TrimSpace(c.DeploymentAttestation) == "" || strings.TrimSpace(c.Model) == "" || strings.TrimSpace(c.PromptRevision) == "" || c.Timeout <= 0 || c.Timeout > 60*time.Second || c.MaxResponseBytes <= 0 || c.MaxResponseBytes > 1024*1024 || transport == nil {
 		return nil, ErrProvider
@@ -110,7 +121,7 @@ func (p *Provider) Generate(ctx context.Context, r Request) (Completion, error) 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if json.Unmarshal(data, &envelope) != nil || envelope.Model != p.config.Model || len(envelope.Choices) != 1 || len(envelope.Choices[0].Message.ToolCalls) > 0 {
+	if !p.validGatewayMetadata(data) || json.Unmarshal(data, &envelope) != nil || envelope.Model != p.config.Model || len(envelope.Choices) != 1 || len(envelope.Choices[0].Message.ToolCalls) > 0 {
 		return Completion{}, ErrProvider
 	}
 	var out Completion
@@ -124,4 +135,27 @@ func (p *Provider) Generate(ctx context.Context, r Request) (Completion, error) 
 		return Completion{}, ErrProvider
 	}
 	return out, nil
+}
+
+// Gateway metadata is a declared contract, not a residency attestation. Refuse a
+// mismatch rather than accepting international processing from a ZA-only host.
+// Direct reviewed providers without gateway metadata retain their existing API.
+func (p *Provider) validGatewayMetadata(data []byte) bool {
+	var envelope struct {
+		Metadata json.RawMessage `json:"gateway_metadata"`
+	}
+	if json.Unmarshal(data, &envelope) != nil {
+		return false
+	}
+	if len(envelope.Metadata) == 0 {
+		return true
+	}
+	var metadata struct {
+		Scope      string `json:"processing_scope"`
+		Disclosure string `json:"international_processing_disclosure"`
+	}
+	if json.Unmarshal(envelope.Metadata, &metadata) != nil || metadata.Scope != p.config.ProcessingScope {
+		return false
+	}
+	return metadata.Scope != "global_standard" || metadata.Disclosure == p.config.InternationalProcessingDisclosure
 }

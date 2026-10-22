@@ -26,7 +26,10 @@ func (s AccessStore) Migrate(ctx context.Context) error {
  organization_id text NOT NULL,employee_id text NOT NULL,user_id text NOT NULL,
  linked_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(organization_id,employee_id))`)
-	return e
+	if e != nil {
+		return e
+	}
+	return s.migrateVersioned(ctx)
 }
 func (s AccessStore) Load(ctx context.Context, a Actor) (Actor, error) {
 	if s.DB == nil || a.OrganizationID == "" || a.UserID == "" {
@@ -150,13 +153,16 @@ func (s AccessStore) Replace(ctx context.Context, org, user string, grants []Gra
 	if _, e = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, string(lockKey)); e != nil {
 		return e
 	}
-	if _, e = tx.ExecContext(ctx, `DELETE FROM addon_api_grants WHERE organization_id=$1 AND user_id=$2`, org, user); e != nil {
+	before, e := accessSnapshotTx(ctx, tx, org, user)
+	if e != nil {
 		return e
 	}
-	for _, g := range grants {
-		if _, e = tx.ExecContext(ctx, `INSERT INTO addon_api_grants(organization_id,user_id,permission,unit_id,audience) VALUES($1,$2,$3,$4,$5)`, org, user, g.Permission, g.UnitID, g.Audience); e != nil {
-			return e
-		}
+	change := AccessReplacement{OrganizationID: org, UserID: user, OperatorID: "legacy-provisioner", Action: "legacy-replace", Reason: "legacy trusted provisioning", ExpectedVersion: before.Version, Grants: grants}
+	if e = writeAccessReplacement(ctx, tx, change, before); e != nil {
+		return e
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return ErrAccessCommitUnknown
+	}
+	return nil
 }
