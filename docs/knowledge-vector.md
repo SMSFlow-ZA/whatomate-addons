@@ -120,6 +120,23 @@ separate recall, ACL-filtering, dimension and load validation. See the
 
 ## Privacy and ownership
 
+Runtime roles need SELECT, never UPDATE, on `addon_knowledge_vector_profiles`
+and `addon_knowledge_vector_workers`. Verification, retrieval and indexing take
+the shared transaction advisory policy fence `19631025` before reading either
+table. `Migrate`, `RegisterIndexer` and `DisableIndexer` acquire its exclusive
+transaction fence before policy writes. Readers hold the fence through their
+bounded transaction; embedding providers run outside it. Vector transactions
+explicitly select READ COMMITTED, independently of the database/session default. Reads
+after a fence wait observe the just-committed worker revocation. Registering an
+existing disabled worker never re-enables it.
+
+This coordinates the reviewed owner APIs. An operator performing direct policy
+SQL must first acquire `pg_advisory_xact_lock(19631025)` in the same transaction,
+or stop/isolate all vector readers and workers. Uncoordinated privileged SQL is
+outside this fence guarantee. Do not grant runtime policy UPDATE merely to enable
+PostgreSQL row locks. The fence is global per database, so owner changes can wait
+for unrelated tenants' bounded vector transactions; it is not held over inference.
+
 Vectors contain derived source data and belong to the knowledge owner. A composite
 foreign key points at the exact tenant/document/version/page with `ON DELETE
 CASCADE`; the existing knowledge privacy owner already deletes those page and
@@ -135,6 +152,11 @@ deployment/provider obligation and is not claimed erased by a PostgreSQL delete.
 database. These tests create/drop only uniquely named schemas, preserve the shared
 extension and never reset databases. They skip if that explicit DSN is absent;
 plain PostgreSQL success is not pgvector evidence.
+
+Restricted-role tests additionally create/drop a unique synthetic LOGIN role and
+its grants. They exercise real Verify/IndexNext/RetrieveVector with no policy
+table/column writes, policy writer blocking, and revocation committed while a
+reader waits. This requires a disposable administrator-controlled test database.
 
 Targeted real PostgreSQL 17.11 / pgvector 0.8.7 tests cover durable nonlexical
 retrieval, tenant/audience/read-revocation isolation, source supersession/retirement,

@@ -49,8 +49,27 @@ type SupervisorConfig struct {
 	JobRoot, DockerPath, Image, DefinitionsRoot, DefinitionsHash string
 	Worker                                                       Config
 	MaxConcurrent, MemoryMiB, CPUs, PIDs, TmpfsMiB               int
-	Timeout                                                      time.Duration
+	// CPUMillis is optional (100..4000). Set CPUs to zero when using it;
+	// otherwise the existing whole-CPU field remains mandatory and unchanged.
+	CPUMillis int
+	Timeout   time.Duration
 }
+
+// CPUQuota returns a fixed bounded Docker decimal; it accepts no free-form
+// argument and refuses ambiguous simultaneous milli/whole-CPU settings.
+func (c SupervisorConfig) CPUQuota() (string, error) {
+	if c.CPUMillis != 0 {
+		if c.CPUs != 0 || c.CPUMillis < 100 || c.CPUMillis > 4000 {
+			return "", ErrNotReady
+		}
+		return fmt.Sprintf("%d.%03d", c.CPUMillis/1000, c.CPUMillis%1000), nil
+	}
+	if c.CPUs < 1 || c.CPUs > 4 {
+		return "", ErrNotReady
+	}
+	return strconv.Itoa(c.CPUs), nil
+}
+
 type jobRunner interface {
 	run(context.Context, string) error
 }
@@ -65,7 +84,8 @@ var pinnedImage = regexp.MustCompile(`^(?:[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:|s
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 func newSupervisor(c SupervisorConfig, r jobRunner) (*Supervisor, error) {
-	if r == nil || !filepath.IsAbs(c.JobRoot) || !filepath.IsAbs(c.DockerPath) || !filepath.IsAbs(c.DefinitionsRoot) || !pinnedImage.MatchString(c.Image) || !digestPattern.MatchString(c.DefinitionsHash) || c.MaxConcurrent < 1 || c.MaxConcurrent > 16 || c.MemoryMiB < 128 || c.MemoryMiB > 4096 || c.CPUs < 1 || c.CPUs > 4 || c.PIDs < 16 || c.PIDs > 128 || c.TmpfsMiB < 32 || c.TmpfsMiB > 512 || c.Timeout <= 0 || c.Timeout > 6*time.Minute {
+	_, cpuErr := c.CPUQuota()
+	if cpuErr != nil || r == nil || !filepath.IsAbs(c.JobRoot) || !filepath.IsAbs(c.DockerPath) || !filepath.IsAbs(c.DefinitionsRoot) || !pinnedImage.MatchString(c.Image) || !digestPattern.MatchString(c.DefinitionsHash) || c.MaxConcurrent < 1 || c.MaxConcurrent > 16 || c.MemoryMiB < 128 || c.MemoryMiB > 4096 || c.PIDs < 16 || c.PIDs > 128 || c.TmpfsMiB < 32 || c.TmpfsMiB > 512 || c.Timeout <= 0 || c.Timeout > 6*time.Minute {
 		return nil, ErrNotReady
 	}
 	info, err := os.Lstat(c.JobRoot)
@@ -282,6 +302,10 @@ type dockerJobRunner struct{ config SupervisorConfig }
 
 func (r dockerJobRunner) run(ctx context.Context, dir string) error {
 	c := r.config
+	cpu, cpuErr := c.CPUQuota()
+	if cpuErr != nil {
+		return cpuErr
+	}
 	digest, err := DefinitionsDigest(c.DefinitionsRoot)
 	if err != nil || digest != c.DefinitionsHash {
 		return ErrNotReady
@@ -313,7 +337,7 @@ func (r dockerJobRunner) run(ctx context.Context, dir string) error {
 		}
 		return v
 	}
-	args := []string{"run", "--rm", "--pull=never", "--name", name, "--user", "10001:10001", "--read-only", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", strconv.Itoa(c.PIDs), "--cpus", strconv.Itoa(c.CPUs), "--memory", strconv.Itoa(c.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(c.MemoryMiB) + "m", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=" + strconv.Itoa(c.TmpfsMiB) + "m,uid=10001,gid=10001", "--mount", mount(filepath.Join(dir, "input"), "/input", true), "--mount", mount(filepath.Join(dir, "config"), "/run/config", true), "--mount", mount(c.DefinitionsRoot, "/var/lib/clamav", true), "--mount", mount(filepath.Join(dir, "output"), "/output", false), c.Image}
+	args := []string{"run", "--rm", "--pull=never", "--name", name, "--user", "10001:10001", "--read-only", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", strconv.Itoa(c.PIDs), "--cpus", cpu, "--memory", strconv.Itoa(c.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(c.MemoryMiB) + "m", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=" + strconv.Itoa(c.TmpfsMiB) + "m,uid=10001,gid=10001", "--mount", mount(filepath.Join(dir, "input"), "/input", true), "--mount", mount(filepath.Join(dir, "config"), "/run/config", true), "--mount", mount(c.DefinitionsRoot, "/var/lib/clamav", true), "--mount", mount(filepath.Join(dir, "output"), "/output", false), c.Image}
 	// Killing the CLI alone does not kill its container. Always force-remove the
 	// named container using an independent bounded cleanup context.
 	cleanup := func() error {

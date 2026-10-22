@@ -67,12 +67,18 @@ func vectorExtension(ctx context.Context, tx *sql.Tx) error {
 }
 
 func (v *VectorRepository) verifyTx(ctx context.Context, tx *sql.Tx) error {
+	// Policy readers retain this transaction fence through their final vector
+	// read/write. Reviewed policy writers take the exclusive fence first; no
+	// runtime UPDATE capability on immutable profiles or worker grants is needed.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared(19631025)`); err != nil {
+		return err
+	}
 	if err := vectorExtension(ctx, tx); err != nil {
 		return err
 	}
 	var model string
 	var dimensions int
-	if err := tx.QueryRowContext(ctx, `SELECT model,dimensions FROM addon_knowledge_vector_profiles WHERE tenant=$1 FOR SHARE`, v.catalog.tenant).Scan(&model, &dimensions); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT model,dimensions FROM addon_knowledge_vector_profiles WHERE tenant=$1`, v.catalog.tenant).Scan(&model, &dimensions); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrVectorProfile
 		}
@@ -99,7 +105,7 @@ func (v *VectorRepository) Migrate(ctx context.Context) error {
 	if !v.valid() {
 		return ErrDenied
 	}
-	tx, err := v.catalog.db.BeginTx(ctx, nil)
+	tx, err := v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -143,7 +149,7 @@ func (v *VectorRepository) Verify(ctx context.Context) error {
 	if !v.valid() {
 		return ErrDenied
 	}
-	tx, err := v.catalog.db.BeginTx(ctx, nil)
+	tx, err := v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -160,19 +166,34 @@ func (v *VectorRepository) RegisterIndexer(ctx context.Context, principal string
 	if !v.valid() || strings.TrimSpace(principal) == "" {
 		return ErrDenied
 	}
-	_, err := v.catalog.db.ExecContext(ctx, `INSERT INTO addon_knowledge_vector_workers(tenant,principal) VALUES($1,$2) ON CONFLICT DO NOTHING`, v.catalog.tenant, principal)
-	return err
+	return v.writeWorkerPolicy(ctx, `INSERT INTO addon_knowledge_vector_workers(tenant,principal) VALUES($1,$2) ON CONFLICT DO NOTHING`, principal)
 }
 func (v *VectorRepository) DisableIndexer(ctx context.Context, principal string) error {
 	if !v.valid() || principal == "" {
 		return ErrDenied
 	}
-	_, err := v.catalog.db.ExecContext(ctx, `UPDATE addon_knowledge_vector_workers SET enabled=false WHERE tenant=$1 AND principal=$2`, v.catalog.tenant, principal)
-	return err
+	return v.writeWorkerPolicy(ctx, `UPDATE addon_knowledge_vector_workers SET enabled=false WHERE tenant=$1 AND principal=$2`, principal)
+}
+
+func (v *VectorRepository) writeWorkerPolicy(ctx context.Context, statement, principal string) error {
+	tx, err := v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(19631025)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, statement, v.catalog.tenant, principal); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (v *VectorRepository) authorizeWorker(ctx context.Context, tx *sql.Tx, principal string) error {
 	var enabled bool
-	err := tx.QueryRowContext(ctx, `SELECT enabled FROM addon_knowledge_vector_workers WHERE tenant=$1 AND principal=$2 FOR SHARE`, v.catalog.tenant, principal).Scan(&enabled)
+	// verifyTx acquired the shared policy fence in an earlier statement. Under
+	// READ COMMITTED this read observes a writer that committed while we waited.
+	err := tx.QueryRowContext(ctx, `SELECT enabled FROM addon_knowledge_vector_workers WHERE tenant=$1 AND principal=$2`, v.catalog.tenant, principal).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !enabled) {
 		return ErrDenied
 	}
@@ -238,7 +259,7 @@ func (v *VectorRepository) IndexNext(ctx context.Context, principal string, prov
 	if !v.valid() || principal == "" || provider == nil {
 		return false, ErrDenied
 	}
-	tx, err := v.catalog.db.BeginTx(ctx, nil)
+	tx, err := v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, err
 	}
@@ -285,7 +306,7 @@ func (v *VectorRepository) IndexNext(ctx context.Context, principal string, prov
 	if err != nil {
 		return false, err
 	}
-	tx, err = v.catalog.db.BeginTx(ctx, nil)
+	tx, err = v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, err
 	}
@@ -343,7 +364,7 @@ func (v *VectorRepository) RetrieveVector(ctx context.Context, q Query, auth Aut
 	if err != nil {
 		return nil, err
 	}
-	tx, err := v.catalog.db.BeginTx(ctx, nil)
+	tx, err := v.catalog.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
 	}
