@@ -7,6 +7,7 @@ public static class GatewayApplication
     public static WebApplication Build(WebApplicationBuilder builder, GatewayOptions options, HttpMessageHandler? upstreamTransport = null)
     {
         options.Validate();
+        if (upstreamTransport is null) SpendingBudget.ValidateConfiguration(options);
         // No HTTP body/header tracing, developer exceptions or request query logs.
         builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
         builder.WebHost.ConfigureKestrel(server =>
@@ -27,6 +28,10 @@ public static class GatewayApplication
         };
         builder.Services.AddSingleton(provider => new GatewayService(options, transport, provider.GetRequiredService<ILogger<GatewayService>>()));
         var app = builder.Build();
+        // Open and validate retained spending history before serving even liveness.
+        // A missing/corrupt/locked ledger must fail startup, not the first request.
+        try { _ = app.Services.GetRequiredService<GatewayService>(); }
+        catch { app.DisposeAsync().AsTask().GetAwaiter().GetResult(); throw; }
         app.Use(async (context, next) =>
         {
             context.Response.Headers.CacheControl = "no-store";

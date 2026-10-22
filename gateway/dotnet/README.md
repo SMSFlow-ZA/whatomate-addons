@@ -8,7 +8,9 @@ The gateway accepts one trusted Whatomate service identity. It does not accept
 user identities, tenant IDs, permissions or case actions from a request. A unique
 bearer token binds the service to one server-configured instance. The public
 `GET /healthz` reports only process liveness; it does not attest Azure readiness.
-There are no persistence, case mutation, tools, public chat or runtime plug-in APIs.
+There are no case mutation, tools, public chat or runtime plug-in APIs. A private
+append-only monetary reservation journal stores only instance, currency, approval,
+time and reserved amounts; no prompts or employee information are written there.
 
 ## Host and Azure contracts
 
@@ -103,9 +105,10 @@ Every request has a 128 KiB body cap, bounded parsing depth and deadline. Budget
 reservations conservatively use serialized UTF-8 input bytes plus all allowed
 output tokens. Every admitted attempt consumes its complete reservation, including
 errors/unknown outcomes; no automatic retry/refund occurs. These minute/concurrency
-budgets are per running process, reset on restart and are **not a durable monetary
-spending cap**. Run exactly one gateway process per instance; independently set
-Azure quotas, budgets and alerts. Upstream 429 returns a safe 429 without retry;
+budgets are per running process and reset on restart. Production additionally
+requires a durable monetary reservation journal as described below. Run exactly
+one gateway process per instance; independently set Azure quotas, budgets and
+alerts. Upstream 429 returns a safe 429 without retry;
 provider failures return sanitized 502/504 errors, never upstream response bodies.
 
 `za_only` requires genuine evidence of all-ZA processing and hosting/storage.
@@ -115,6 +118,45 @@ RAG storage does not imply South African model processing. No region, approval
 or locality evidence is inferred from an Azure hostname or a configuration label.
 Go independently validates the same scope/approval/disclosure. The gateway has no
 stored prompts or vector database; host retrieval/persistence remains separate.
+
+### Durable monetary reservations
+
+Production requires `SpendingLedgerPath` (absolute path to an existing journal),
+`SpendingCurrency` (three-letter ISO code), `MonthlySpendLimitMinor` (positive minor
+currency units), `DailySpendLimitMinor` (zero to omit a separate daily restriction,
+or no greater than the monthly limit), `MaxCostMinorPerMillionTokens` and
+`SpendingApprovalReference`. There are no inferred prices, currency conversion or
+default approvals. Review the maximum tariff across all pinned generation and
+embedding deployments, including exchange-rate/tax/surcharge headroom. This is a
+conservative reservation ceiling, not billing reconciliation or a promise about
+unrelated users/keys calling the Azure resource.
+
+Each upstream attempt reserves its serialized UTF-8 bytes plus the maximum output
+tokens and 1,024 tokens of framing headroom, all at that maximum tariff. The minor
+amount rounds upward. The reservation is appended and fsynced before network I/O;
+no provider error, timeout, cancellation or unknown result refunds it. Minute and
+concurrency refusal occurs before monetary reservation. A full cap returns 429
+without contacting Azure. UTC calendar months/days apply; clock rollback denies
+requests. A 16 MiB history bound stops further requests rather than rotating away
+history. Missing, incomplete, identity-mismatched, linked or already-open history
+refuses startup; storage/write uncertainty stops further calls.
+
+Initialize only once as an explicit offline operator operation with the same
+configuration: `dotnet ErGateway.dll --initialize-spending-ledger`. Initialization
+uses exclusive creation and cannot overwrite an existing journal. Create the
+existing parent directory on approved persistent storage owned by gateway UID/GID
+1654 with mode 0700; the journal is mode 0600. Mount the directory read-write into
+the otherwise read-only gateway container. Normal startup never initializes or
+resets history. The runtime holds an exclusive file share for its lifetime; prove
+cross-process locking and durable fsync on the actual NFS target before release.
+
+Include the journal in encrypted backups and accounting reconciliation. A valid
+older snapshot is not detectable using a standalone file alone: restored gateways
+must remain outbound-held until independently current spending history is
+reconciled, or the remaining billing period is conservatively exhausted. Do not
+reset a ledger, change instance identity or prune history to reopen allowance.
+Application hash chaining detects accidental chain damage; it does not defend
+against a privileged operator rewriting both data and hashes.
 
 Production startup requires mounted certificate and private key paths:
 

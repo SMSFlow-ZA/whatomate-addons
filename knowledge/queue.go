@@ -32,10 +32,33 @@ type ProcessingJob struct {
 	Input                                                      []byte
 	Metadata                                                   UploadMetadata
 }
-type ProcessingQueue struct{ db *sql.DB }
+type ProcessingQueue struct {
+	db         *sql.DB
+	tenant     string
+	authorize  func(context.Context, *sql.Tx, ProcessingJob) error
+	authorized bool
+}
 
 func NewProcessingQueue(db *sql.DB) *ProcessingQueue { return &ProcessingQueue{db: db} }
-func digest(b []byte) string                         { return fmt.Sprintf("%x", sha256.Sum256(b)) }
+
+// NewAuthorizedProcessingQueue scopes production claims and invokes current
+// owner authorization inside the same transaction as claim/completion. The host
+// callback must lock its current membership/grants through transaction commit.
+// A missing tenant or callback fails closed rather than using legacy behavior.
+func NewAuthorizedProcessingQueue(db *sql.DB, tenant string, authorize func(context.Context, *sql.Tx, ProcessingJob) error) *ProcessingQueue {
+	return &ProcessingQueue{db: db, tenant: tenant, authorize: authorize, authorized: true}
+}
+
+func (q *ProcessingQueue) check(ctx context.Context, tx *sql.Tx, j ProcessingJob) error {
+	if q.authorized {
+		if strings.TrimSpace(q.tenant) == "" || q.authorize == nil || j.TenantID != q.tenant {
+			return ErrDenied
+		}
+		return q.authorize(ctx, tx, j)
+	}
+	return nil
+}
+func digest(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 func randomID() string {
 	var b [24]byte
 	if _, e := rand.Read(b[:]); e != nil {
@@ -90,17 +113,21 @@ func (q *ProcessingQueue) Claim(ctx context.Context, worker string, lease time.D
 	if q.db == nil || worker == "" || lease < time.Second || lease > 15*time.Minute {
 		return ProcessingJob{}, ErrDenied
 	}
+
+	if q.authorized && (strings.TrimSpace(q.tenant) == "" || q.authorize == nil) {
+		return ProcessingJob{}, ErrDenied
+	}
 	tx, e := q.db.BeginTx(ctx, nil)
 	if e != nil {
 		return ProcessingJob{}, e
 	}
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='unknown',version=version+1,failure='lease_expired',updated_at=clock_timestamp() WHERE status='processing' AND lease_until<=clock_timestamp()`); e != nil {
+	if _, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='unknown',version=version+1,failure='lease_expired',updated_at=clock_timestamp() WHERE status='processing' AND lease_until<=clock_timestamp() AND ($1='' OR tenant=$1)`, q.tenant); e != nil {
 		return ProcessingJob{}, e
 	}
 	var j ProcessingJob
 	var metadata []byte
-	e = tx.QueryRowContext(ctx, `SELECT id,tenant,actor,input,input_hash,metadata,metadata_hash FROM addon_knowledge_jobs WHERE status='queued' ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&j.ID, &j.TenantID, &j.ActorID, &j.Input, &j.InputHash, &metadata, &j.MetadataHash)
+	e = tx.QueryRowContext(ctx, `SELECT id,tenant,actor,input,input_hash,metadata,metadata_hash FROM addon_knowledge_jobs WHERE status='queued' AND ($1='' OR tenant=$1) ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, q.tenant).Scan(&j.ID, &j.TenantID, &j.ActorID, &j.Input, &j.InputHash, &metadata, &j.MetadataHash)
 	if errors.Is(e, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return ProcessingJob{}, err
@@ -116,6 +143,9 @@ func (q *ProcessingQueue) Claim(ctx context.Context, worker string, lease time.D
 	canonical, _ := json.Marshal(j.Metadata)
 	if digest(j.Input) != j.InputHash || digest(canonical) != j.MetadataHash {
 		return ProcessingJob{}, ErrDenied
+	}
+	if e = q.check(ctx, tx, j); e != nil {
+		return ProcessingJob{}, e
 	}
 	j.LeaseToken = randomID()
 	_, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='processing',worker=$2,lease_token=$3,lease_until=clock_timestamp()+($4 * interval '1 second'),version=version+1,updated_at=clock_timestamp() WHERE id=$1`, j.ID, worker, j.LeaseToken, int(lease.Seconds()))
@@ -155,6 +185,9 @@ func (q *ProcessingQueue) Complete(ctx context.Context, j ProcessingJob, pages [
 	return q.complete(ctx, j, pages, e, nil)
 }
 func (q *ProcessingQueue) complete(ctx context.Context, j ProcessingJob, pages []Page, e Evidence, receipt *ProcessingReceipt) error {
+	if q.authorized && (j.TenantID != q.tenant || receipt == nil) {
+		return ErrDenied
+	}
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -162,6 +195,9 @@ func (q *ProcessingQueue) complete(ctx context.Context, j ProcessingJob, pages [
 	defer tx.Rollback()
 	m, input, err := q.lockedJob(ctx, tx, j)
 	if err != nil {
+		return err
+	}
+	if err = q.check(ctx, tx, j); err != nil {
 		return err
 	}
 	total := 0
@@ -185,6 +221,9 @@ func (q *ProcessingQueue) complete(ctx context.Context, j ProcessingJob, pages [
 	return tx.Commit()
 }
 func (q *ProcessingQueue) Fail(ctx context.Context, j ProcessingJob, reason string, unknown bool) error {
+	if q.authorized && j.TenantID != q.tenant {
+		return ErrDenied
+	}
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

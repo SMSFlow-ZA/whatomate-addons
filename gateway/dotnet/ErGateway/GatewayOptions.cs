@@ -31,6 +31,12 @@ public sealed class GatewayOptions
     public int MaxCompletionTokens { get; set; } = 2048;
     public int TimeoutSeconds { get; set; } = 45;
     public int MaxResponseBytes { get; set; } = 1048576;
+    public string SpendingLedgerPath { get; set; } = "";
+    public string SpendingCurrency { get; set; } = "";
+    public string SpendingApprovalReference { get; set; } = "";
+    public long MonthlySpendLimitMinor { get; set; }
+    public long DailySpendLimitMinor { get; set; }
+    public long MaxCostMinorPerMillionTokens { get; set; }
 
     public void LoadSecrets()
     {

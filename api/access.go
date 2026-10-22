@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -149,8 +148,7 @@ func (s AccessStore) Replace(ctx context.Context, org, user string, grants []Gra
 	}
 	defer tx.Rollback()
 	// Serialize replacements for one user even when there are no existing rows.
-	lockKey, _ := json.Marshal([]string{org, user})
-	if _, e = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, string(lockKey)); e != nil {
+	if e = s.LockVersionedTx(ctx, tx, org, user); e != nil {
 		return e
 	}
 	before, e := accessSnapshotTx(ctx, tx, org, user)

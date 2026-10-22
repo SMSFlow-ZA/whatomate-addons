@@ -111,8 +111,7 @@ func (s AccessStore) ReplaceVersioned(ctx context.Context, change AccessReplacem
 		return AccessSnapshot{}, err
 	}
 	defer tx.Rollback()
-	lock, _ := json.Marshal([]string{change.OrganizationID, change.UserID})
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, string(lock)); err != nil {
+	if err = s.LockVersionedTx(ctx, tx, change.OrganizationID, change.UserID); err != nil {
 		return AccessSnapshot{}, err
 	}
 	before, err := accessSnapshotTx(ctx, tx, change.OrganizationID, change.UserID)

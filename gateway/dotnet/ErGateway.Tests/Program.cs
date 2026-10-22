@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
+SpendingTests.Run();
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 static GatewayOptions Options() => new()
 {
@@ -32,6 +33,20 @@ static GatewayOptions Options() => new()
 };
 static object Chat(string question = "What is the policy?", string page = "Approved policy", string model = "er-chat-v1") => new { model, max_tokens = 1024, temperature = 0, response_format = new { type = "json_object" }, messages = new[] { new { role = "system", content = "Go trusted policy wrapper" }, new { role = "user", content = JsonSerializer.Serialize(new { Question = question, Sources = new[] { new { Reference = "private-doc-ref", DocumentID = "not-for-upstream", Version = "1", ContentHash = "hash", ManifestHash = "approved", Page = new { Number = 1, Text = page, Method = "text", ExtractorRevision = "v1" } } } }) } } };
 var defaults = Options(); defaults.Validate();
+var startupRoot = Path.Combine(Path.GetTempPath(), "gateway-startup-budget-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(startupRoot);
+try
+{
+    var missingLedger = Options(); missingLedger.SpendingLedgerPath = Path.Combine(startupRoot, "missing.jsonl");
+    missingLedger.SpendingCurrency = "ZAR"; missingLedger.SpendingApprovalReference = "synthetic-startup";
+    missingLedger.MonthlySpendLimitMinor = 100; missingLedger.MaxCostMinorPerMillionTokens = 100;
+    var b = WebApplication.CreateBuilder(); b.Logging.ClearProviders();
+    bool rejected = false;
+    try { await using var bad = GatewayApplication.Build(b, missingLedger, new FakeAzure()); }
+    catch (IOException) { rejected = true; }
+    Check(rejected, "missing spending ledger deferred until first request instead of refusing startup");
+}
+finally { Directory.Delete(startupRoot, true); }
 foreach (var mutate in new Action<GatewayOptions>[] {
  x=>x.AzureEndpoint="http://synthetic.openai.azure.com/openai/v1/",x=>x.AzureEndpoint="https://attacker.invalid/openai/v1/",x=>x.ServiceToken=x.AzureApiKey,x=>x.ProcessingScope="global_standard",x=>x.ProcessingScope="unknown",x=>x.MaxConcurrentRequests=0,x=>x.NanoModel="gpt-5-nano",x=>x.DeploymentAttestation="",x=>x.AzureEndpoint="https://synthetic.openai.azure.com/openai/v1/?key=bad",x=>x.AzureEndpoint="https://user@synthetic.openai.azure.com/openai/v1/"
 }) { var o = Options(); mutate(o); bool rejected = false; try { o.Validate(); } catch (InvalidOperationException) { rejected = true; } Check(rejected, "unsafe config accepted"); }
@@ -94,6 +109,25 @@ async Task WithApp(GatewayOptions options, FakeAzure upstream, Func<HttpClient, 
     try { await action(c); } finally { await application.StopAsync(); }
 }
 async Task<HttpResponseMessage> Send(HttpClient c) => await c.PostAsync("/v1/chat/completions", new StringContent(JsonSerializer.Serialize(Chat()), Encoding.UTF8, "application/json"));
+// A provider failure still consumes a durable monetary reservation. The next
+// process must stop before sending when that retained reservation reaches cap.
+var spendRoot = Path.Combine(Path.GetTempPath(), "gateway-http-budget-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(spendRoot);
+try
+{
+    var spend = Options(); spend.SpendingLedgerPath = Path.Combine(spendRoot, "ledger.jsonl"); spend.SpendingCurrency = "ZAR";
+    spend.SpendingApprovalReference = "synthetic-http-approval"; spend.MonthlySpendLimitMinor = 1_000_000; spend.MaxCostMinorPerMillionTokens = 1_000_000;
+    SpendingBudget.Initialize(spend);
+    var failedProvider = new FakeAzure { Mode = "error" };
+    await WithApp(spend, failedProvider, async c => Check((await Send(c)).StatusCode == HttpStatusCode.BadGateway, "provider failure fixture missing"));
+    Check(failedProvider.Calls == 1, "failed request was not actually attempted once");
+    using (var reservation = JsonDocument.Parse(File.ReadAllLines(spend.SpendingLedgerPath)[1])) spend.MonthlySpendLimitMinor = reservation.RootElement.GetProperty("Minor").GetInt64();
+    var afterRestart = new FakeAzure();
+    await WithApp(spend, afterRestart, async c => Check((await Send(c)).StatusCode == HttpStatusCode.TooManyRequests, "HTTP restart reset monetary cap"));
+    Check(afterRestart.Calls == 0, "exhausted monetary budget reached provider");
+    Console.WriteLine("PASS: HTTP provider failure retained reservation and restart stopped upstream at monetary cap");
+}
+finally { Directory.Delete(spendRoot, true); }
 await WithApp(global, new(), async c =>
 {
     var response = await Send(c); var text = await response.Content.ReadAsStringAsync(); Check(response.IsSuccessStatusCode && text.Contains("global_standard") && text.Contains(global.InternationalProcessingDisclosure), "international processing disclosure missing from chat");

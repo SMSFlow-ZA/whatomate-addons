@@ -99,11 +99,11 @@ func DefinitionsDigest(root string) (string, error) {
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 512*1024*1024 {
 			return "", ErrNotReady
 		}
-		b, err := readArtifact(filepath.Join(root, entry.Name()), 512*1024*1024)
+		digest, err := definitionFileDigest(filepath.Join(root, entry.Name()), 512*1024*1024)
 		if err != nil {
 			return "", ErrNotReady
 		}
-		fmt.Fprintf(&corpus, "%d:%s:%s\n", len(entry.Name()), entry.Name(), hash(b))
+		fmt.Fprintf(&corpus, "%d:%s:%s\n", len(entry.Name()), entry.Name(), digest)
 		if strings.HasSuffix(entry.Name(), ".cvd") || strings.HasSuffix(entry.Name(), ".cld") {
 			accepted = true
 		}

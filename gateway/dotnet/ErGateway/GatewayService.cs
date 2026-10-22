@@ -19,7 +19,7 @@ public sealed class GatewayService : IDisposable
         this.options = options; this.logger = logger; budget = new(options);
         azure = new(transport) { Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds) };
     }
-    public void Dispose() => azure.Dispose();
+    public void Dispose() { azure.Dispose(); budget.Dispose(); }
 
     public async Task<IResult> Handle(HttpContext context, bool embeddings)
     {
@@ -201,7 +201,7 @@ public sealed class GatewayService : IDisposable
         if (bytes > options.MaxInputBytes) return (null, Failure(413, "model_input_too_large"));
         // UTF-8 bytes conservatively bound input tokens. Reserve full allowed
         // output (reasoning included); failed/unknown calls consume reservation.
-        using var lease = budget.TryAcquire(checked(bytes + completionTokens));
+        using var lease = budget.TryAcquire(checked(bytes + completionTokens + 1024));
         if (lease is null) return (null, Failure(429, "instance_budget_exhausted"));
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(options.AzureEndpoint), path));
         request.Headers.Add("api-key", options.AzureApiKey);
