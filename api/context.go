@@ -24,13 +24,20 @@ type Grant struct {
 type Actor struct {
 	OrganizationID, UserID, SessionID string
 	MFA                               bool
-	Permissions                       []string
-	Grants                            []Grant
+	// PrimarySessionAuthorized is supplied only by the authenticated host's
+	// explicitly configured demo policy. It does not assert MFA verification.
+	PrimarySessionAuthorized bool
+	Permissions              []string
+	Grants                   []Grant
 	// Aliases are verified, historical identity links loaded by AccessStore.
 	// They are not accepted from HTTP input or used to grant a permission.
 	Aliases []string
 }
 type actorKey struct{}
+
+func (a Actor) HasProtectedAuthentication() bool {
+	return a.MFA || a.PrimarySessionAuthorized
+}
 
 func clone(a Actor) Actor {
 	a.Permissions = append([]string(nil), a.Permissions...)
@@ -43,7 +50,7 @@ func WithActor(ctx context.Context, a Actor) context.Context {
 }
 func ActorFrom(ctx context.Context) (Actor, error) {
 	a, ok := ctx.Value(actorKey{}).(Actor)
-	if !ok || strings.TrimSpace(a.OrganizationID) == "" || strings.TrimSpace(a.UserID) == "" || strings.TrimSpace(a.SessionID) == "" || !a.MFA {
+	if !ok || strings.TrimSpace(a.OrganizationID) == "" || strings.TrimSpace(a.UserID) == "" || strings.TrimSpace(a.SessionID) == "" || !a.HasProtectedAuthentication() {
 		return Actor{}, ErrDenied
 	}
 	return clone(a), nil
