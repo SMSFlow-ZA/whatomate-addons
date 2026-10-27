@@ -182,6 +182,13 @@ logged by this application. Do not enable body/header logging or third-party
 telemetry capture around it. Review reverse-proxy and Azure diagnostic retention
 separately as part of the deployment evidence.
 
+Rejected model output also emits `AI output rejected Stage=<constant>` at warning
+level. The fixed enum distinguishes envelope/finish/tool/refusal/content failures,
+grounding, inference, answer length, citation shape/reference and verbatim checks.
+It never includes provider-supplied values, content, identifiers or exceptions.
+Successful output adds no diagnostic event. These events preserve the existing
+HTTP handoff/error contracts and do not retry requests or alter spending reservations.
+
 ## Build and verification
 
 ```sh

@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 SpendingTests.Run();
+await OutputDiagnosticsTests.Run();
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 static GatewayOptions Options() => new()
 {

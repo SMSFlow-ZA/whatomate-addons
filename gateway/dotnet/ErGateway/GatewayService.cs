@@ -105,20 +105,21 @@ public sealed class GatewayService : IDisposable
         if (content is null) return Handoff("unsupported_output");
         using var completion = JsonDocument.Parse(content);
         var value = completion.RootElement; Properties(value, ["answer", "citations", "grounded", "inference"]);
-        if (!value.GetProperty("grounded").GetBoolean() || value.GetProperty("inference").GetBoolean()) return Handoff("unsupported_output");
+        if (!value.GetProperty("grounded").GetBoolean()) return OutputRejected(OutputStage.NotGrounded);
+        if (value.GetProperty("inference").GetBoolean()) return OutputRejected(OutputStage.Inference);
         var answer = String(value, "answer", 3600);
-        if (Encoding.UTF8.GetByteCount(answer) > 900) return Handoff("unsupported_output");
+        if (Encoding.UTF8.GetByteCount(answer) > 900) return OutputRejected(OutputStage.AnswerTooLong);
         var citations = value.GetProperty("citations");
-        if (citations.ValueKind != JsonValueKind.Array || citations.GetArrayLength() is < 1 or > 20) return Handoff("unsupported_output");
+        if (citations.ValueKind != JsonValueKind.Array || citations.GetArrayLength() is < 1 or > 20) return OutputRejected(OutputStage.CitationsShape);
         var originalCitations = new List<string>(); bool grounded = false;
         foreach (var citation in citations.EnumerateArray())
         {
             var reference = citation.GetString() ?? "";
-            if (!references.TryGetValue(reference, out var original)) return Handoff("unsupported_output");
+            if (!references.TryGetValue(reference, out var original)) return OutputRejected(OutputStage.UnknownCitation);
             grounded |= pages[reference].Contains(answer, StringComparison.Ordinal);
             originalCitations.Add(original);
         }
-        if (!grounded) return Handoff("unsupported_output");
+        if (!grounded) return OutputRejected(OutputStage.NonVerbatim);
         response["choices"]![0]!["message"]!["content"] = JsonSerializer.Serialize(new { answer, citations = originalCitations.Distinct(), grounded = true, inference = false });
         response["model"] = options.ChatAlias;
         return Results.Json(response);
@@ -244,16 +245,27 @@ public sealed class GatewayService : IDisposable
             throw;
         }
     }
-    private static string? ChatContent(JsonObject response)
+    private string? ChatContent(JsonObject response)
     {
-        if (response["choices"] is not JsonArray choices || choices.Count != 1 || choices[0] is not JsonObject choice || NodeString(choice["finish_reason"]) != "stop" || choice["message"] is not JsonObject message || message["tool_calls"] is not null || message["function_call"] is not null || message["refusal"] is not null) return null;
+        if (response["choices"] is not JsonArray choices || choices.Count != 1 || choices[0] is not JsonObject choice) return RejectedContent(OutputStage.ChoicesShape);
+        if (NodeString(choice["finish_reason"]) != "stop") return RejectedContent(OutputStage.FinishReasonNotStop);
+        if (choice["message"] is not JsonObject message) return RejectedContent(OutputStage.MessageShape);
+        if (message["tool_calls"] is not null) return RejectedContent(OutputStage.ToolCalls);
+        if (message["function_call"] is not null) return RejectedContent(OutputStage.FunctionCall);
+        if (message["refusal"] is not null) return RejectedContent(OutputStage.Refusal);
         var content = NodeString(message["content"]);
-        if (string.IsNullOrWhiteSpace(content)) return null;
+        if (string.IsNullOrWhiteSpace(content)) return RejectedContent(OutputStage.EmptyContent);
         // Strip optional null tool fields: the Go adapter intentionally refuses
         // any raw tool_calls property, including JSON null.
         response["choices"] = new JsonArray(new JsonObject { ["finish_reason"] = "stop", ["message"] = new JsonObject { ["role"] = "assistant", ["content"] = content } });
         return content;
     }
+    // Constant branches only: never log provider text, source references, model
+    // finish-reason values, request identities or exceptions at this boundary.
+    private enum OutputStage { ChoicesShape, FinishReasonNotStop, MessageShape, ToolCalls, FunctionCall, Refusal, EmptyContent, NotGrounded, Inference, AnswerTooLong, CitationsShape, UnknownCitation, NonVerbatim }
+    private void LogOutputRejection(OutputStage stage) => logger.LogWarning("AI output rejected Stage={Stage}", stage);
+    private string? RejectedContent(OutputStage stage) { LogOutputRejection(stage); return null; }
+    private IResult OutputRejected(OutputStage stage) { LogOutputRejection(stage); return Handoff("unsupported_output"); }
     private IResult Handoff(string reason) => Results.Json(new { model = options.ChatAlias, choices = new[] { new { message = new { role = "assistant", content = JsonSerializer.Serialize(new { answer = "", citations = Array.Empty<string>(), grounded = false, inference = false }) } } }, gateway_metadata = new { handoff = true, reason, processing_scope = options.ProcessingScope, international_processing_disclosure = options.ProcessingScope == "global_standard" ? options.InternationalProcessingDisclosure : "", response = FixedResponse } });
     private static string? NodeString(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var result) ? result : null;
     private static IResult Failure(int status, string code) => Results.Json(new { error = new { code } }, statusCode: status);
