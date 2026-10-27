@@ -174,6 +174,13 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 	enquiry := false
 	processingNotice := false
 	switch {
+	case lower == "send processing notice":
+		// Handle this before draft phases: requesting the configured notice must
+		// not replace the narrative or consume a pending case confirmation.
+		if err := s.requestProcessingDisclosure(in, &turn); err != nil {
+			return Turn{}, err
+		}
+		processingNotice = true
 	case turn.Phase == "narrative":
 		if len([]rune(message)) < 12 {
 			turn.Reply = "Please describe what happened in at least 12 characters."

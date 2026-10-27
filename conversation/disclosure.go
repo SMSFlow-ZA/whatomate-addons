@@ -15,7 +15,34 @@ type ProcessingDisclosure struct {
 	Text     string
 }
 
-// advisoryDisclosureReady binds actual delivery of the exact original notice
+// processingDisclosureKey validates trusted configuration for both initial and
+// explicitly requested notices. Request text never supplies notice contents.
+func processingDisclosureKey(notice *ProcessingDisclosure) (string, error) {
+	if notice == nil || strings.TrimSpace(notice.Revision) == "" || len(notice.Revision) > 128 || strings.TrimSpace(notice.Text) == "" || len(notice.Text) > 2000 || !utf8.ValidString(notice.Revision) || !utf8.ValidString(notice.Text) {
+		return "", ErrDenied
+	}
+	return digest("model-processing-notice\x00" + notice.Revision + "\x00" + notice.Text), nil
+}
+
+// setProcessingDisclosure records a fresh notice in the inbound transaction.
+// It neither retries nor changes any earlier delivery, including unknown ones.
+func setProcessingDisclosure(in Inbound, turn *Turn, notice *ProcessingDisclosure, key string) {
+	turn.ProcessingDisclosureKey = key
+	turn.ProcessingDisclosureIntentID = digest(in.Tenant + "\x00" + in.Account + "\x00" + in.ProviderMessageID)
+	turn.Reply = notice.Text + "\n\nPlease resend your SOP question after this notice is delivered. For human assistance, reply LOG CASE."
+}
+
+func (s Service) requestProcessingDisclosure(in Inbound, turn *Turn) error {
+	notice := s.Config.ProcessingDisclosure
+	key, err := processingDisclosureKey(notice)
+	if err != nil {
+		return err
+	}
+	setProcessingDisclosure(in, turn, notice, key)
+	return nil
+}
+
+// advisoryDisclosureReady binds actual delivery of the exact current notice
 // to the current employee/account and effective configured revision/text. A
 // queued/accepted/sent/failed/unknown notice or SMS fallback cannot unlock AI.
 func (s Service) advisoryDisclosureReady(ctx context.Context, in Inbound, turn *Turn) (bool, error) {
@@ -23,14 +50,12 @@ func (s Service) advisoryDisclosureReady(ctx context.Context, in Inbound, turn *
 	if notice == nil {
 		return true, nil
 	}
-	if strings.TrimSpace(notice.Revision) == "" || len(notice.Revision) > 128 || strings.TrimSpace(notice.Text) == "" || len(notice.Text) > 2000 || !utf8.ValidString(notice.Revision) || !utf8.ValidString(notice.Text) {
-		return false, ErrDenied
+	key, err := processingDisclosureKey(notice)
+	if err != nil {
+		return false, err
 	}
-	key := digest("model-processing-notice\x00" + notice.Revision + "\x00" + notice.Text)
 	if turn.ProcessingDisclosureKey != key || turn.ProcessingDisclosureIntentID == "" {
-		turn.ProcessingDisclosureKey = key
-		turn.ProcessingDisclosureIntentID = digest(in.Tenant + "\x00" + in.Account + "\x00" + in.ProviderMessageID)
-		turn.Reply = notice.Text + "\n\nPlease resend your SOP question after this notice is delivered. For human assistance, reply LOG CASE."
+		setProcessingDisclosure(in, turn, notice, key)
 		return false, nil
 	}
 	status, err := delivery.ReadDeliveryStatus(ctx, s.DB, in.Tenant, turn.ProcessingDisclosureIntentID)
