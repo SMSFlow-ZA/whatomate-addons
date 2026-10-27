@@ -25,7 +25,7 @@ publication and withdrawal checks remain authoritative in the Go service. A
 service token is not proof of publication or employee authorization.
 
 Client wrapper instructions are discarded. Generation sends only minimized
-question/page text and temporary opaque source references to Azure. Document IDs,
+question/excerpt text and temporary opaque excerpt IDs to Azure. Document IDs,
 manifest hashes, original citation references, contacts, actor/permission data
 and case identities are not forwarded as metadata. Common email, South African
 phone, numeric identity and UUID patterns are masked. This is **not complete PII
@@ -39,10 +39,21 @@ Simple policy questions use GPT-5 Nano with minimal reasoning; comparisons, conf
 other recognized nuance use GPT-5 Mini with low reasoning. This is deterministic advisory routing,
 not an employment decision. Unsupported/ungrounded output, missing sources,
 model refusals, incomplete reasoning or tool calls produce a safe handoff.
-Only literal approved source excerpts and mapped source citations are returned.
-Go must still validate the original exact excerpt and recheck current sources.
-If masking makes an excerpt differ from the original, Go correctly hands off;
-do not undo masking to force a successful answer.
+The server splits policy text into contiguous sentence-oriented excerpts of at
+most 900 UTF-8 bytes, without splitting Unicode scalar values. Long sentences
+use bounded contiguous chunks. At most 128 excerpts are admitted per request;
+exceeding that bound hands off before an upstream call. The existing serialized
+input and spending limits still apply. Excerpts altered by PII masking are
+excluded; masking is never reversed.
+
+The model returns only `excerpt_id`, `grounded` and `inference`. It selects one
+supplied excerpt or `none`; it cannot supply answer text or citation metadata.
+Unknown IDs, extra/duplicate fields, non-grounded output and inferred answers
+hand off. The server emits the selected original text and original source
+reference through the unchanged host answer/citation contract. It never joins
+separate excerpts. Go still validates the exact excerpt and current sources.
+This constrains provenance; it does not prove that a model selected the most
+relevant passage. Real model acceptance and human review remain necessary.
 
 Classification extracts one unambiguous fixed topic tag (attendance, workplace
 concern, conflict of interest or escalation). Only that tag and the fixed allowed
@@ -184,7 +195,8 @@ separately as part of the deployment evidence.
 
 Rejected model output also emits `AI output rejected Stage=<constant>` at warning
 level. The fixed enum distinguishes envelope/finish/tool/refusal/content failures,
-grounding, inference, answer length, citation shape/reference and verbatim checks.
+grounding, inference, selection shape, unknown/absent excerpt IDs and the final
+verbatim check.
 It never includes provider-supplied values, content, identifiers or exceptions.
 Successful output adds no diagnostic event. These events preserve the existing
 HTTP handoff/error contracts and do not retry requests or alter spending reservations.

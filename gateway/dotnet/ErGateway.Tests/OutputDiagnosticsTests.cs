@@ -32,7 +32,7 @@ static class OutputDiagnosticsTests
                 new { Reference = "private-reference", DocumentID = "private-document", Version = "1", ContentHash = "hash", ManifestHash = "approved", Page = new { Number = 1, Text = "Approved policy", Method = "text", ExtractorRevision = "v1" } }
             } }) }
         } };
-        static JsonObject Completion() => JsonNode.Parse("{\"answer\":\"Approved policy\",\"citations\":[\"s0\"],\"grounded\":true,\"inference\":false}")!.AsObject();
+        static JsonObject Completion() => JsonNode.Parse("{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false}")!.AsObject();
         static JsonObject Envelope() => new() { ["model"] = "gpt-5-nano-2025-08-07", ["usage"] = new JsonObject { ["total_tokens"] = 30 }, ["choices"] = new JsonArray(new JsonObject { ["finish_reason"] = "stop", ["message"] = new JsonObject { ["content"] = Completion().ToJsonString() } }) };
         static JsonObject Message(JsonObject body) => body["choices"]![0]!["message"]!.AsObject();
         var fixtures = new (string Stage, Action<JsonObject> Mutate)[] {
@@ -45,10 +45,9 @@ static class OutputDiagnosticsTests
             ("EmptyContent", b => Message(b)["content"] = " "),
             ("NotGrounded", b => { var c = Completion(); c["grounded"] = false; Message(b)["content"] = c.ToJsonString(); }),
             ("Inference", b => { var c = Completion(); c["inference"] = true; Message(b)["content"] = c.ToJsonString(); }),
-            ("AnswerTooLong", b => { var c = Completion(); c["answer"] = new string('x', 901); Message(b)["content"] = c.ToJsonString(); }),
-            ("CitationsShape", b => { var c = Completion(); c["citations"] = new JsonArray(); Message(b)["content"] = c.ToJsonString(); }),
-            ("UnknownCitation", b => { var c = Completion(); c["citations"] = new JsonArray(marker); Message(b)["content"] = c.ToJsonString(); }),
-            ("NonVerbatim", b => { var c = Completion(); c["answer"] = marker; Message(b)["content"] = c.ToJsonString(); })
+            ("SelectionShape", b => { var c = Completion(); c["answer"] = marker; Message(b)["content"] = c.ToJsonString(); }),
+            ("UnknownExcerpt", b => { var c = Completion(); c["excerpt_id"] = marker; Message(b)["content"] = c.ToJsonString(); }),
+            ("NoSelection", b => { var c = Completion(); c["excerpt_id"] = "none"; Message(b)["content"] = c.ToJsonString(); })
         };
         try
         {
@@ -65,7 +64,7 @@ static class OutputDiagnosticsTests
             logs.Events.Clear(); transport.Body = Envelope();
             using var success = await client.PostAsync("/v1/chat/completions", new StringContent(JsonSerializer.Serialize(Request()), Encoding.UTF8, "application/json"));
             Check(success.IsSuccessStatusCode && (await success.Content.ReadAsStringAsync()).Contains("Approved policy", StringComparison.Ordinal) && logs.Events.Count == 0, "valid output produced rejection noise");
-            Console.WriteLine("PASS: 13 output rejection stages, unchanged handoffs, malicious output sanitization, no retries and quiet success");
+            Console.WriteLine("PASS: 12 output rejection stages, safe handoffs, malicious output sanitization, no retries and quiet success");
         }
         finally { await app.StopAsync(); }
     }
