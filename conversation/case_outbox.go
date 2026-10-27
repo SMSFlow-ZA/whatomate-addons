@@ -27,7 +27,7 @@ func (s Service) CaseAcknowledgement(ctx context.Context, m cases.OutboxMessage,
 	if !ok {
 		return delivery.Message{}, ErrDenied
 	}
-	notice := delivery.Message{ID: m.ID, Tenant: m.OrganizationID, Account: account, Sender: emp.Phone, EmployeeID: emp.ID, CaseID: m.CaseID, Text: "Case submitted. Reference: " + m.CaseID + ". Reply STATUS for a redacted update."}
+	notice := delivery.Message{ID: m.ID, Tenant: m.OrganizationID, Account: account, Sender: emp.Phone, EmployeeID: emp.ID, CaseID: m.CaseID, Text: caseAcknowledgementReply(m.CaseID)}
 	if e = s.AuthorizeDelivery(ctx, notice); e != nil {
 		return delivery.Message{}, e
 	}

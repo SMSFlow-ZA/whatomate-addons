@@ -68,6 +68,7 @@ public sealed class GatewayService : IDisposable
         if (sources.GetArrayLength() == 0) return Handoff("no_approved_sources");
         var excerpts = new Dictionary<string, (string Reference, string Text, string OriginalPage)>();
         var safeExcerpts = new List<object>();
+        var pageEnds = new List<int>();
         foreach (var source in sources.EnumerateArray())
         {
             Properties(source, ["Reference", "DocumentID", "Version", "ContentHash", "ManifestHash", "Page"]);
@@ -89,11 +90,12 @@ public sealed class GatewayService : IDisposable
                 excerpts.Add(id, (original, excerpt, originalPage));
                 safeExcerpts.Add(new { id, text = excerpt });
             }
+            pageEnds.Add(safeExcerpts.Count);
         }
         if (excerpts.Count == 0) return Handoff("no_approved_excerpts");
         var safeQuestion = Minimize(question);
         var nuanced = Regex.IsMatch(safeQuestion, @"\b(compare|conflict|exception|ambiguous|difference|interpret|however|versus)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
-        var payload = JsonSerializer.SerializeToNode(new
+        JsonNode BuildPayload() => JsonSerializer.SerializeToNode(new
         {
             model = nuanced ? options.MiniDeployment : options.NanoDeployment,
             reasoning_effort = nuanced ? "low" : "minimal",
@@ -104,6 +106,21 @@ public sealed class GatewayService : IDisposable
                 new { role="user", content=JsonSerializer.Serialize(new {question=safeQuestion,excerpts=safeExcerpts}) }
             }
         })!;
+        // Candidate pages arrive in governed relevance order. Fit the actual
+        // serialized upstream request by removing whole trailing pages only.
+        // Validate every supplied page above before fitting; never skip a more
+        // relevant page, clip a quotation, change its citation or raise limits.
+        var payload = BuildPayload();
+        while (Encoding.UTF8.GetByteCount(payload.ToJsonString()) > options.MaxInputBytes)
+        {
+            if (pageEnds.Count <= 1) return Failure(413, "model_input_too_large");
+            pageEnds.RemoveAt(pageEnds.Count - 1);
+            int keep = pageEnds[^1];
+            for (int i = safeExcerpts.Count - 1; i >= keep; i--) excerpts.Remove("e" + i);
+            safeExcerpts.RemoveRange(keep, safeExcerpts.Count - keep);
+            if (safeExcerpts.Count == 0) return Handoff("no_approved_excerpts");
+            payload = BuildPayload();
+        }
         var upstream = await Call("chat/completions", payload, nuanced ? options.MiniModel : options.NanoModel, maxTokens, cancellation);
         if (upstream.Error is not null) return upstream.Error;
         var response = upstream.Response!;
@@ -138,6 +155,9 @@ public sealed class GatewayService : IDisposable
         var topics = new List<int>();
         for (int i = 0; i < keywords.Length; i++)
             if (keywords[i].Any(word => Regex.IsMatch(text, @"\b" + Regex.Escape(word) + @"\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50)))) topics.Add(i);
+        // Recognize a neutral attendance description without sending a personal
+        // narrative upstream. The existing ambiguity/risk checks still apply.
+        if (!topics.Contains(0) && Regex.IsMatch(text, @"\barriv(?:ed|es|ing|e)\s+after\s+(?:the\s+)?(?:scheduled|expected)\s+start\s+time\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50))) topics.Add(0);
         if (topics.Count != 1 || !labels.Contains(Taxonomy[topics[0]])) return Failure(422, "human_review_required");
         string[] tags = ["attendance", "workplace_concern", "conflict_of_interest", "escalation"];
         var topic = tags[topics[0]];

@@ -183,21 +183,21 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		processingNotice = true
 	case turn.Phase == "narrative":
 		if len([]rune(message)) < 12 {
-			turn.Reply = "Please describe what happened in at least 12 characters."
+			turn.Reply = "Please add a little more detail about what happened (at least 12 characters), without unnecessary personal information. Your case has not been submitted yet."
 		} else {
 			turn.Narrative = message
 			turn.IntakeSnapshot = cases.Classification{Zone: emp.Zone, Department: emp.Department, CaseType: "employee_request"}
 			turn.IntakeKey = "conversation:" + digest(in.Tenant+"\x00"+in.Account+"\x00"+in.Sender+"\x00"+in.ProviderMessageID)
 			turn.Phase = "confirm"
-			turn.Reply = "Submit this case? Reply CONFIRM or CANCEL."
+			turn.Reply = "Thank you for sharing that. Your case has not been submitted yet. Reply CONFIRM to submit it for human review, or CANCEL to discard this draft."
 		}
 	case turn.Phase == "confirm":
 		if lower == "cancel" {
 			turn.Phase = "ready"
 			turn.Narrative = ""
-			turn.Reply = "Case cancelled."
+			turn.Reply = "The draft has been cancelled without submitting a case. You can still ask an SOP question or reply LOG CASE to start again."
 		} else if lower != "confirm" {
-			turn.Reply = "Reply CONFIRM to submit or CANCEL."
+			turn.Reply = "I'm waiting for your choice. Reply CONFIRM to submit this case for human review, or CANCEL to discard the draft."
 		} else {
 			if turn.IntakeSnapshot.Zone != emp.Zone {
 				return Turn{}, ErrDenied
@@ -214,7 +214,7 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 			turn.Selected = r.CaseID
 			turn.Phase = "ready"
 			turn.Narrative = ""
-			turn.Reply = "Case submitted. Reference: " + r.CaseID + ". Reply STATUS for a redacted update."
+			turn.Reply = caseAcknowledgementReply(r.CaseID)
 			delay := s.Config.EscalationAfter
 			if delay <= 0 {
 				delay = 24 * time.Hour
@@ -226,7 +226,7 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		}
 	case lower == "log case" || lower == "logcase" || lower == "new case":
 		turn.Phase = "narrative"
-		turn.Reply = "Please briefly describe what happened. Do not include unnecessary personal details."
+		turn.Reply = "I can help you record a concern for human review. Please briefly describe what happened, without unnecessary personal details. I'll ask you to confirm before submitting it."
 	case lower == "status" || strings.HasPrefix(lower, "status "):
 		id := strings.TrimSpace(message[len("status"):])
 		if lower == "status" {
@@ -258,10 +258,10 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 		}
 	case lower == "handoff" || lower == "human":
 		turn.Phase = "ready"
-		turn.Reply = "For a human handoff, reply LOG CASE. Your confirmed case will enter the protected routing queue."
+		turn.Reply = "I can help you request human assistance. Reply LOG CASE, share a brief description and confirm when prompted. Your confirmed case will enter the protected routing queue. No new case is created until you confirm."
 	default:
 		enquiry = true
-		turn.Reply = "Reply LOG CASE to submit a concern, STATUS for your case, or ask an SOP question."
+		turn.Reply = "Hello. You can ask a question about an approved SOP, reply LOG CASE to record a concern for human review, or reply STATUS to check one of your cases. Please leave out unnecessary personal details."
 		if s.Config.Advisor != nil {
 			ready, disclosureErr := s.advisoryDisclosureReady(ctx, in, &turn)
 			if disclosureErr != nil {
@@ -273,11 +273,11 @@ func (s Service) Receive(ctx context.Context, in Inbound) (Turn, error) {
 			}
 			a := api.Actor{OrganizationID: in.Tenant, UserID: emp.ID, Aliases: p.Aliases}
 			answer, err := s.Config.Advisor(ctx, a, message)
-			if err == nil && !answer.Handoff && len(answer.Citations) > 0 && answer.Text != "" {
-				turn.Reply = answer.Text
+			if reply, supported := supportedReply(answer); err == nil && supported {
+				turn.Reply = reply
 				turn.Citations = answer.Citations
 			} else {
-				turn.Reply = "I cannot provide a supported answer. Reply LOG CASE for human assistance."
+				turn.Reply = humanAssistanceReply
 			}
 		}
 	}
