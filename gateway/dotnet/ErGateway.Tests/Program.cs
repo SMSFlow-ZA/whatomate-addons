@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 
 SpendingTests.Run();
 await ExcerptSelectionTests.Run();
+HeadingExcerptTests.Run();
 await ContextBudgetTests.Run();
 await OutputDiagnosticsTests.Run();
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
