@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 SpendingTests.Run();
+ParagraphExcerptTests.Run();
 await ExcerptSelectionTests.Run();
 HeadingExcerptTests.Run();
 await ContextBudgetTests.Run();
@@ -185,7 +186,7 @@ sealed class FakeAzure : HttpMessageHandler
         using var body = JsonDocument.Parse(LastBody); var deployment = body.RootElement.GetProperty("model").GetString();
         if (deployment != "embed-deploy" && body.RootElement.GetProperty("reasoning_effort").GetString() != (deployment == "nano-deploy" ? "minimal" : "low")) throw new Exception("reasoning budget route mismatch");
         var topic = LastBody.Contains("topic_tags", StringComparison.Ordinal);
-        object response = deployment == "embed-deploy" ? new { model = "text-embedding-3-small", data = new[] { new { index = 0, embedding = new[] { 1.0, 0.0, 0.0 } } }, usage = new { prompt_tokens = 10, total_tokens = 10 } } : new { model = Mode == "model-mismatch" ? "unpinned-model" : deployment == "nano-deploy" ? "gpt-5-nano-2025-08-07" : "gpt-5-mini-2025-08-07", choices = new[] { new { finish_reason = Mode == "incomplete" ? "length" : "stop", message = new { role = "assistant", content = topic ? "{\"label\":\"Attendance concern\",\"rationale\":\"Attendance topic\"}" : "{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false}" } } }, usage = new { prompt_tokens = 10, completion_tokens = 20, total_tokens = 30 } };
+        object response = deployment == "embed-deploy" ? new { model = "text-embedding-3-small", data = new[] { new { index = 0, embedding = new[] { 1.0, 0.0, 0.0 } } }, usage = new { prompt_tokens = 10, total_tokens = 10 } } : new { model = Mode == "model-mismatch" ? "unpinned-model" : deployment == "nano-deploy" ? "gpt-5-nano-2025-08-07" : "gpt-5-mini-2025-08-07", choices = new[] { new { finish_reason = Mode == "incomplete" ? "length" : "stop", message = new { role = "assistant", content = topic ? "{\"label\":\"Attendance concern\",\"rationale\":\"Attendance topic\"}" : "{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false,\"complete\":true}" } } }, usage = new { prompt_tokens = 10, completion_tokens = 20, total_tokens = 30 } };
         return new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(response), Encoding.UTF8, "application/json") };
     }
     static void CheckAuth(HttpRequestMessage request) { if (request.Headers.GetValues("api-key").Single() != new string('a', 40) || !request.RequestUri!.AbsoluteUri.StartsWith("https://synthetic.openai.azure.com/openai/v1/")) throw new Exception("upstream key/endpoint contract violated"); }

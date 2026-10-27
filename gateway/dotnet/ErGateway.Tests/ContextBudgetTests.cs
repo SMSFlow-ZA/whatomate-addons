@@ -56,8 +56,8 @@ static class ContextBudgetTests
             using var payload=JsonDocument.Parse(LastBody);using var context=JsonDocument.Parse(payload.RootElement.GetProperty("messages")[1].GetProperty("content").GetString()!);
             string content;
             if(Classify) content="{\"label\":\"Attendance concern\",\"rationale\":\"Provisional attendance topic\"}";
-            else {Excerpts=context.RootElement.GetProperty("excerpts").EnumerateArray().Select(x=>x.GetProperty("text").GetString()!).ToArray();content="{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false}";}
-            return new(HttpStatusCode.OK){Content=new StringContent(JsonSerializer.Serialize(new{model="gpt-5-nano-2025-08-07",usage=new{total_tokens=100},choices=new[]{new{finish_reason="stop",message=new{content}}}}),Encoding.UTF8,"application/json")};
+            else {Excerpts=context.RootElement.GetProperty("excerpts").EnumerateArray().Select(x=>x.GetProperty("text").GetString()!).ToArray();content="{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false,\"complete\":true}";}
+            return new(HttpStatusCode.OK){Content=new StringContent(JsonSerializer.Serialize(new{model=payload.RootElement.GetProperty("model").GetString()=="mini"?"gpt-5-mini-2025-08-07":"gpt-5-nano-2025-08-07",usage=new{total_tokens=100},choices=new[]{new{finish_reason="stop",message=new{content}}}}),Encoding.UTF8,"application/json")};
         }
     }
 }

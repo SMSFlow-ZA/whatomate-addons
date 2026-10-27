@@ -32,7 +32,7 @@ static class OutputDiagnosticsTests
                 new { Reference = "private-reference", DocumentID = "private-document", Version = "1", ContentHash = "hash", ManifestHash = "approved", Page = new { Number = 1, Text = "Approved policy", Method = "text", ExtractorRevision = "v1" } }
             } }) }
         } };
-        static JsonObject Completion() => JsonNode.Parse("{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false}")!.AsObject();
+        static JsonObject Completion() => JsonNode.Parse("{\"excerpt_id\":\"e0\",\"grounded\":true,\"inference\":false,\"complete\":true}")!.AsObject();
         static JsonObject Envelope() => new() { ["model"] = "gpt-5-nano-2025-08-07", ["usage"] = new JsonObject { ["total_tokens"] = 30 }, ["choices"] = new JsonArray(new JsonObject { ["finish_reason"] = "stop", ["message"] = new JsonObject { ["content"] = Completion().ToJsonString() } }) };
         static JsonObject Message(JsonObject body) => body["choices"]![0]!["message"]!.AsObject();
         var fixtures = new (string Stage, Action<JsonObject> Mutate)[] {
@@ -44,6 +44,9 @@ static class OutputDiagnosticsTests
             ("Refusal", b => Message(b)["refusal"] = marker),
             ("EmptyContent", b => Message(b)["content"] = " "),
             ("NotGrounded", b => { var c = Completion(); c["grounded"] = false; Message(b)["content"] = c.ToJsonString(); }),
+            ("Incomplete", b => { var c = Completion(); c["complete"] = false; Message(b)["content"] = c.ToJsonString(); }),
+            ("IncompleteMissing", b => { var c = Completion(); c.Remove("complete"); Message(b)["content"] = c.ToJsonString(); }),
+            ("IncompleteType", b => { var c = Completion(); c["complete"] = "true"; Message(b)["content"] = c.ToJsonString(); }),
             ("Inference", b => { var c = Completion(); c["inference"] = true; Message(b)["content"] = c.ToJsonString(); }),
             ("SelectionShape", b => { var c = Completion(); c["answer"] = marker; Message(b)["content"] = c.ToJsonString(); }),
             ("UnknownExcerpt", b => { var c = Completion(); c["excerpt_id"] = marker; Message(b)["content"] = c.ToJsonString(); }),
@@ -58,13 +61,13 @@ static class OutputDiagnosticsTests
                 var text = await response.Content.ReadAsStringAsync();
                 Check(response.StatusCode == HttpStatusCode.OK && text.Contains("unsupported_output", StringComparison.Ordinal) && !text.Contains(marker, StringComparison.Ordinal), "handoff contract changed: " + fixture.Stage);
                 Check(transport.Calls == before + 1, "diagnostic retried provider");
-                Check(logs.Events.SequenceEqual(new[] { "AI output rejected Stage=" + fixture.Stage }), "missing or unsafe rejection stage: " + fixture.Stage);
+                Check(logs.Events.SequenceEqual(new[] { "AI output rejected Stage=" + (fixture.Stage is "IncompleteMissing" or "IncompleteType"?"SelectionShape":fixture.Stage) }), "missing or unsafe rejection stage: " + fixture.Stage);
                 Check(!logs.Events.Any(x => x.Contains(marker, StringComparison.Ordinal) || x.Contains("private-", StringComparison.Ordinal) || x.Contains(options.InstanceId, StringComparison.Ordinal)), "private output escaped diagnostics");
             }
             logs.Events.Clear(); transport.Body = Envelope();
             using var success = await client.PostAsync("/v1/chat/completions", new StringContent(JsonSerializer.Serialize(Request()), Encoding.UTF8, "application/json"));
             Check(success.IsSuccessStatusCode && (await success.Content.ReadAsStringAsync()).Contains("Approved policy", StringComparison.Ordinal) && logs.Events.Count == 0, "valid output produced rejection noise");
-            Console.WriteLine("PASS: 12 output rejection stages, safe handoffs, malicious output sanitization, no retries and quiet success");
+            Console.WriteLine("PASS: output rejection stages including missing/incomplete selection, safe handoffs, malicious output sanitization, no retries and quiet success");
         }
         finally { await app.StopAsync(); }
     }

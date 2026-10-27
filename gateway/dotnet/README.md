@@ -35,20 +35,27 @@ than raw cases, narratives or contacts. Recognized personal narratives and
 sensitive/consequential topics take a human handoff before any upstream call.
 The conservative risk list may also hand off informational sensitive questions.
 
-Simple policy questions use GPT-5 Nano with minimal reasoning; comparisons, conflicts, exceptions and
-other recognized nuance use GPT-5 Mini with low reasoning. This is deterministic advisory routing,
+Single-excerpt simple policy questions use GPT-5 Nano with minimal reasoning;
+selection among multiple approved excerpts, comparisons, conflicts, exceptions
+and other recognized nuance uses GPT-5 Mini with low reasoning. This remains one
+request with the same token, input and monetary bounds; there is no model retry.
+This is deterministic advisory routing,
 not an employment decision. Unsupported/ungrounded output, missing sources,
 model refusals, incomplete reasoning or tool calls produce a safe handoff.
-The server splits policy text into contiguous sentence-oriented excerpts of at
+The server retains complete paragraphs and procedure lists in structured policy
+pages, excluding separate layout metadata. Purpose/scope blocks remain selectable
+after procedural passages. Unstructured text and oversized paragraphs use bounded
+sentence-oriented excerpts. All excerpts are contiguous original spans of at
 most 900 UTF-8 bytes, without splitting Unicode scalar values. Long sentences
 use bounded contiguous chunks. At most 128 excerpts are admitted per request;
 exceeding that bound hands off before an upstream call. The existing serialized
 input and spending limits still apply. Excerpts altered by PII masking are
 excluded; masking is never reversed.
 
-The model returns only `excerpt_id`, `grounded` and `inference`. It selects one
+The model returns only `excerpt_id`, `grounded`, `inference` and `complete`. It selects one
 supplied excerpt or `none`; it cannot supply answer text or citation metadata.
-Unknown IDs, extra/duplicate fields, non-grounded output and inferred answers
+Unknown IDs, extra/duplicate fields, non-grounded output, inferred answers and
+missing/false/mistyped completeness indicators
 hand off. The server emits the selected original text and original source
 reference through the unchanged host answer/citation contract. It never joins
 separate excerpts. Go still validates the exact excerpt and current sources.
