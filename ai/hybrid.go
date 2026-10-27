@@ -19,23 +19,58 @@ type VectorRetriever interface {
 	RetrieveVector(context.Context, knowledge.Query, knowledge.Authorizer, []float64) ([]knowledge.Source, error)
 }
 
-// HybridRetriever uses FTS first. With Vectors configured it embeds only the
-// query and delegates native search/current authorization to that repository.
-// Otherwise the legacy fallback reranks governed lexical candidates in memory.
+// FallbackMode is trusted host configuration, never a request-selected strategy.
+type FallbackMode string
+
+const (
+	FallbackEmbeddings    FallbackMode = "embeddings"
+	FallbackRankedLexical FallbackMode = "ranked_lexical"
+)
+
+// The empty mode preserves existing embedding behavior. Ranked lexical recall
+// must be explicitly configured; errors never switch a request between modes.
+func (m FallbackMode) Valid() bool {
+	return m == "" || m == FallbackEmbeddings || m == FallbackRankedLexical
+}
+
+// HybridRetriever uses FTS first. Explicit ranked lexical fallback retains the
+// governed candidate order without embedding. Otherwise, configured Vectors
+// receive only an embedded query; the legacy fallback embeds and reranks the
+// governed lexical candidates in memory.
 type HybridRetriever struct {
 	Catalog    Retriever
 	Candidates CandidateRetriever
 	Embeddings Embedder
 	Vectors    VectorRetriever
+	Fallback   FallbackMode
 }
 
 func (h HybridRetriever) Retrieve(ctx context.Context, q knowledge.Query, a knowledge.Authorizer) ([]knowledge.Source, error) {
-	if h.Catalog == nil {
+	if h.Catalog == nil || !h.Fallback.Valid() {
 		return nil, ErrProvider
 	}
 	sources, e := h.Catalog.Retrieve(ctx, q, a)
 	if e != nil || len(sources) > 0 {
 		return sources, e
+	}
+	if h.Fallback == FallbackRankedLexical {
+		if a == nil || q.Principal == "" || q.Audience == "" || q.At.IsZero() || strings.TrimSpace(q.Text) == "" || len(q.Text) > 4096 || !a.Allowed(ctx, q.Principal, q.Audience) {
+			return nil, nil
+		}
+		if h.Candidates == nil {
+			return nil, ErrProvider
+		}
+		// Candidates retain database relevance order and all publication/current
+		// authorization checks. Do not embed approved policy text through the
+		// query embedding contract or substitute unrelated pages on an error.
+		sources, e = h.Candidates.RetrieveCandidates(ctx, q, a)
+		if e != nil {
+			return nil, e
+		}
+		if len(sources) > 8 {
+			sources = sources[:8]
+		}
+		return sources, nil
 	}
 	if h.Vectors != nil {
 		if a == nil || q.Principal == "" || q.Audience == "" || q.At.IsZero() || strings.TrimSpace(q.Text) == "" || len(q.Text) > 4096 || !a.Allowed(ctx, q.Principal, q.Audience) {
