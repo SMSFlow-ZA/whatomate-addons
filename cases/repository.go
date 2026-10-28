@@ -192,7 +192,7 @@ func (s Service) Assign(ctx context.Context, p Principal, id string, expected ui
 	if e != nil {
 		return Case{}, e
 	}
-	if subject(p, c) || len(c.Assignments) != 0 || !scoped(p, c, AssignTriage) {
+	if operatorConflict(p, c) || len(c.Assignments) != 0 || !scoped(p, c, AssignTriage) {
 		return Case{}, ErrDenied
 	}
 	if c.Version != expected {

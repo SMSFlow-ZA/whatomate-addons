@@ -54,10 +54,25 @@ Narratives remain in component memory and are not stored in browser persistence.
 Participants distinguish complainant, subject and participant supervisor. Links
 never grant read/work rights. Subject conflict overrides every grant. Assigned
 handlers/supervisors need `cases:work.assigned` for the exact organization/unit.
+Complainants and their verified historical aliases cannot act as operators on
+their own complaint, even if an earlier assignment or triage grant remains.
+They cannot obtain internal details, case-bound raw facts, assistance, handler
+notices, routing, management, emergency disclosure or operator privacy access.
+Explicit own-status and draft-submission grants still work; own-status responses
+remain limited to `id`, `state` and `version`, even alongside operator grants.
+An explicit subject link continues to deny even that own-status access.
 Unassigned triage requires `cases:read.triage`; triage management separately
 requires `cases:assign.triage`. There is no implicit administrator, wildcard unit
 or support bypass. Own reads/submission require a matching verified complainant
 identity and `cases:read.own`/`cases:submit.own` for that exact scope.
+
+A participant-supervisor link alone does not establish a complainant conflict;
+an independently assigned and scoped supervisor may still work the case. Normal
+intake records the authenticated caller as complainant. There is no structured
+manager-on-behalf reporter exception, and narrative text cannot create one.
+The separate `reports:aggregate` boundary still requires downstream suppression
+and its existing subject exclusion; it grants no operator content access and is
+not changed by the complainant operator restriction.
 
 `HTTPConfig.ResolveCandidate` must resolve a live same-organization identity and
 its current explicit work grants. It returns a verified Principal even if that

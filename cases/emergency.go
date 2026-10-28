@@ -32,7 +32,7 @@ func (s Service) ReadEmergency(ctx context.Context, p Principal, id string, auth
 	if e != nil {
 		return Case{}, e
 	}
-	if c.ID != id || subject(p, c) || !scoped(p, c, ReadTriage) {
+	if c.ID != id || operatorConflict(p, c) || !scoped(p, c, ReadTriage) {
 		return Case{}, ErrDenied
 	}
 	if e = authorize(ctx, c.ID); e != nil {
@@ -50,7 +50,7 @@ func (s Service) ReadEmergency(ctx context.Context, p Principal, id string, auth
 	if e != nil {
 		return Case{}, e
 	}
-	if current.ID != id || current.Version != c.Version || subject(p, current) || !scoped(p, current, ReadTriage) {
+	if current.ID != id || current.Version != c.Version || operatorConflict(p, current) || !scoped(p, current, ReadTriage) {
 		return Case{}, ErrDenied
 	}
 	return current, nil

@@ -71,7 +71,7 @@ func operatorView(c Case) OperatorDTO {
 	return v
 }
 func safeView(p Principal, c Case) any {
-	if (assigned(p, c) && scoped(p, c, WorkAssigned)) || (len(c.Assignments) == 0 && scoped(p, c, ReadTriage)) {
+	if operatorRead(p, c) {
 		return operatorView(c)
 	}
 	return EmployeeView(c)

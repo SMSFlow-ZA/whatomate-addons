@@ -36,7 +36,7 @@ func EmployeeView(c Case) EmployeeDTO {
 
 // Operator edits require assignment work scope or explicit triage scope, and subjects always lose.
 func canManage(p Principal, c Case) bool {
-	return !subject(p, c) && (scoped(p, c, AssignTriage) || (assigned(p, c) && scoped(p, c, WorkAssigned)))
+	return !operatorConflict(p, c) && (scoped(p, c, AssignTriage) || CanWork(p, c))
 }
 func (s Service) mutate(ctx context.Context, p Principal, id string, expected uint64, occurred time.Time, reason, kind string, edit func(*Case) error) (Case, error) {
 	if s.Repository == nil || occurred.IsZero() {
@@ -163,7 +163,7 @@ func ListCurrent(ctx context.Context, db *sql.DB, a api.Actor, query string) ([]
 			continue
 		}
 		search := c.ID + " " + string(c.State)
-		if (assigned(p, c) && scoped(p, c, WorkAssigned)) || (len(c.Assignments) == 0 && scoped(p, c, ReadTriage)) {
+		if operatorRead(p, c) {
 			search += " " + c.Category
 		}
 		if query != "" && !strings.Contains(strings.ToLower(search), query) {
@@ -197,7 +197,7 @@ func ReportFacts(ctx context.Context, db *sql.DB, a api.Actor) ([]ReportFact, er
 	facts := []ReportFact{}
 	for _, c := range list {
 		p := PrincipalForActor(a)
-		if !((assigned(p, c) && scoped(p, c, WorkAssigned)) || (len(c.Assignments) == 0 && scoped(p, c, ReadTriage))) {
+		if !operatorRead(p, c) {
 			continue
 		}
 		for _, event := range c.Events {

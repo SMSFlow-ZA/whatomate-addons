@@ -86,7 +86,7 @@ func EscalationFacts(ctx context.Context, tx *sql.Tx, scope NotificationScope, s
 // CanNotifyHandler is narrower than CanRead: own-case/triage grants and alias
 // assignments never grant a background notice to an unassigned host user.
 func CanNotifyHandler(p Principal, c Case) bool {
-	if c.State == Draft || c.State == Resolved || c.State == Closed || subject(p, c) || !scoped(p, c, WorkAssigned) {
+	if c.State == Draft || c.State == Resolved || c.State == Closed || !CanWork(p, c) {
 		return false
 	}
 	for _, a := range c.Assignments {

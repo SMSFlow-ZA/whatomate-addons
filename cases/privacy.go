@@ -35,7 +35,7 @@ func PrivacyCase(ctx context.Context, tx *sql.Tx, a api.Actor, id string) (Case,
 	return c, nil
 }
 func privacyOperatorRead(p Principal, c Case) bool {
-	return !subject(p, c) && ((assigned(p, c) && scoped(p, c, WorkAssigned)) || (len(c.Assignments) == 0 && scoped(p, c, ReadTriage)))
+	return operatorRead(p, c)
 }
 
 // PrivacyCases discovers only cases containing the named verified identity.

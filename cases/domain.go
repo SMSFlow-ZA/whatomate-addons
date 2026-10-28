@@ -158,14 +158,14 @@ func CanRead(p Principal, c Case) bool {
 	if subject(p, c) {
 		return false
 	}
-	return (assigned(p, c) && scoped(p, c, WorkAssigned)) || (len(c.Assignments) == 0 && scoped(p, c, ReadTriage)) || (complainant(p, c) && scoped(p, c, ReadOwn))
+	return operatorRead(p, c) || (complainant(p, c) && scoped(p, c, ReadOwn))
 }
 func Transition(c Case, p Principal, expected uint64, to State, reason string, recorded, occurred time.Time) (Case, error) {
 	if subject(p, c) {
 		return Case{}, ErrDenied
 	}
 	ownSubmit := c.State == Draft && to == Submitted && complainant(p, c) && scoped(p, c, SubmitOwn)
-	if !ownSubmit && !(assigned(p, c) && scoped(p, c, WorkAssigned)) {
+	if !ownSubmit && !CanWork(p, c) {
 		return Case{}, ErrDenied
 	}
 	if c.Version != expected {
@@ -218,7 +218,7 @@ type Candidate struct {
 func Route(c Case, candidates []Candidate) (Assignment, error) {
 	for _, backup := range []bool{false, true} {
 		for _, v := range candidates {
-			if v.Backup == backup && !v.Conflict && !subject(v.Principal, c) && scoped(v.Principal, c, WorkAssigned) && (v.Role == Handler || v.Role == Supervisor) {
+			if v.Backup == backup && !v.Conflict && !operatorConflict(v.Principal, c) && scoped(v.Principal, c, WorkAssigned) && (v.Role == Handler || v.Role == Supervisor) {
 				return Assignment{ID: v.Principal.ID, Role: v.Role}, nil
 			}
 		}
