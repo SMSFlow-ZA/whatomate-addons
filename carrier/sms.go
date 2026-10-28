@@ -63,7 +63,26 @@ func (s Service) authorize(ctx context.Context, m delivery.Message) error {
 			return ErrDenied
 		}
 	}
-	return s.Conversation.AuthorizeDelivery(ctx, m)
+	return s.authorizePurpose(ctx, m)
+}
+
+// Receipt reconciliation uses the current purpose policy without requiring a
+// still-open sending window. It never creates a new handler fallback/send.
+func (s Service) authorizePurpose(ctx context.Context, m delivery.Message) error {
+	switch m.Purpose {
+	case "":
+		if s.Conversation == nil || m.RecipientUserID != "" || m.EventVersion != 0 {
+			return ErrDenied
+		}
+		return s.Conversation.AuthorizeDelivery(ctx, m)
+	case delivery.HandlerEscalation:
+		if s.AuthorizeHandler == nil || m.Channel == "sms" {
+			return ErrDenied
+		}
+		return s.AuthorizeHandler(ctx, m)
+	default:
+		return ErrDenied
+	}
 }
 func persistReceipt(ctx context.Context, tx *sql.Tx, v Status) error {
 	if v.ProviderClientID != "" {

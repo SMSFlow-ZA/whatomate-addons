@@ -65,6 +65,9 @@ func (r Reconciler) Reconcile(ctx context.Context, receipt api.Receipt) error {
 	if m.Account == "" || m.Account != receipt.Account || (provider != "" && provider != receipt.ProviderID) {
 		return ErrInvalid
 	}
+	if m.Purpose != "" && (m.Purpose != HandlerEscalation || r.Authorize == nil || r.Authorize(ctx, m) != nil) {
+		return ErrInvalid
+	}
 	var prior string
 	e = tx.QueryRowContext(ctx, `SELECT fingerprint FROM addon_conversation_delivery_receipt WHERE tenant=$1 AND account=$2 AND receipt_id=$3`, receipt.Tenant, receipt.Account, receipt.ReceiptID).Scan(&prior)
 	if e == nil {
@@ -95,7 +98,7 @@ func (r Reconciler) Reconcile(ctx context.Context, receipt api.Receipt) error {
 	if e != nil {
 		return e
 	}
-	if receipt.Outcome == "failed" && state != "failed" && m.Channel != "sms" && r.SMSFallback != nil && r.SMSFallback.Account != "" && r.Authorize != nil && r.Authorize(ctx, m) == nil {
+	if receipt.Outcome == "failed" && state != "failed" && m.Purpose == "" && m.Channel != "sms" && r.SMSFallback != nil && r.SMSFallback.Account != "" && r.Authorize != nil && r.Authorize(ctx, m) == nil {
 		fallback := m
 		fallback.ID = m.ID + ":sms-fallback"
 		fallback.Account = r.SMSFallback.Account

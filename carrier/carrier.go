@@ -31,14 +31,15 @@ type Status struct {
 	ObservedAt                                                          time.Time
 }
 type Service struct {
-	SMSRoutes       []SMSRoute
-	SendSMSObserved func(context.Context, delivery.Message) (delivery.Result, string, error)
-	PollSMS         func(context.Context, string, string, string) (ReceiptPage, error)
-	DB              *sql.DB
-	Bindings        []Binding
-	Conversation    *conversation.Service
-	Clock           func() time.Time
-	SendObserved    func(context.Context, delivery.Message) (delivery.Result, string, error)
+	AuthorizeHandler func(context.Context, delivery.Message) error
+	SMSRoutes        []SMSRoute
+	SendSMSObserved  func(context.Context, delivery.Message) (delivery.Result, string, error)
+	PollSMS          func(context.Context, string, string, string) (ReceiptPage, error)
+	DB               *sql.DB
+	Bindings         []Binding
+	Conversation     *conversation.Service
+	Clock            func() time.Time
+	SendObserved     func(context.Context, delivery.Message) (delivery.Result, string, error)
 }
 
 func CanonicalNumber(v string) (string, error) {
@@ -406,7 +407,7 @@ func (s Service) ReconcilePending(ctx context.Context) error {
 			continue
 		}
 		if _, e = delivery.ReadDeliveryStatus(ctx, s.DB, v.Tenant, id); e == nil {
-			e = (delivery.Reconciler{DB: s.DB, Verify: verify, SMSFallback: s.fallback(v.Tenant, v.Account), Authorize: s.Conversation.AuthorizeDelivery}).Reconcile(ctx, r)
+			e = (delivery.Reconciler{DB: s.DB, Verify: verify, SMSFallback: s.fallback(v.Tenant, v.Account), Authorize: s.authorizePurpose}).Reconcile(ctx, r)
 		} else {
 			e = (&cases.SQLRepository{DB: s.DB}).ReconcileOutbox(ctx, r, verify)
 		}

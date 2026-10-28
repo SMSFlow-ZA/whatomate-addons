@@ -11,18 +11,24 @@ import (
 )
 
 type Message struct {
-	Channel    string `json:"channel,omitempty"`
-	ID         string `json:"id"`
-	Tenant     string `json:"tenant"`
-	Account    string `json:"account"`
-	Sender     string `json:"sender"`
-	EmployeeID string `json:"employee_id"`
-	CaseID     string `json:"case_id,omitempty"`
-	Text       string `json:"text"`
-	State      string `json:"state"`
-	Lease      string `json:"-"`
+	// Empty purpose is the legacy employee conversation contract.
+	Purpose         string `json:"purpose,omitempty"`
+	RecipientUserID string `json:"recipient_user_id,omitempty"`
+	EventVersion    uint64 `json:"event_version,omitempty"`
+	Channel         string `json:"channel,omitempty"`
+	ID              string `json:"id"`
+	Tenant          string `json:"tenant"`
+	Account         string `json:"account"`
+	Sender          string `json:"sender"`
+	EmployeeID      string `json:"employee_id"`
+	CaseID          string `json:"case_id,omitempty"`
+	Text            string `json:"text"`
+	State           string `json:"state"`
+	Lease           string `json:"-"`
 }
 type Result string
+
+const HandlerEscalation = "handler_escalation"
 
 const (
 	// VerifiedSent is the legacy synchronous transport acceptance label. It is
@@ -47,6 +53,9 @@ CREATE TABLE IF NOT EXISTS addon_conversation_delivery_receipt(tenant text NOT N
 
 // Enqueue participates in the inbound/turn transaction. Stable IDs reject duplicate sends.
 func Enqueue(ctx context.Context, tx *sql.Tx, m Message) error {
+	// Transient delivery observations are not part of immutable intent meaning.
+	m.State = ""
+	m.Lease = ""
 	if _, e := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("delivery-intent:%d:%s:%s", len(m.Tenant), m.Tenant, m.ID)); e != nil {
 		return e
 	}
@@ -55,7 +64,21 @@ func Enqueue(ctx context.Context, tx *sql.Tx, m Message) error {
 		return e
 	}
 	_, e = tx.ExecContext(ctx, `INSERT INTO addon_conversation_delivery(id,tenant,sender,payload) SELECT $1,$2,$3,$4 WHERE NOT EXISTS(SELECT 1 FROM addon_delivery_erased WHERE tenant=$2 AND id=$1) ON CONFLICT DO NOTHING`, m.ID, m.Tenant, m.Sender, b)
-	return e
+	if e != nil {
+		return e
+	}
+	var same bool
+	e = tx.QueryRowContext(ctx, `SELECT tenant=$2 AND sender=$3 AND (payload-'state')=($4::jsonb-'state') FROM addon_conversation_delivery WHERE id=$1`, m.ID, m.Tenant, m.Sender, b).Scan(&same)
+	if errors.Is(e, sql.ErrNoRows) {
+		return nil
+	} // erased intent remains suppressed
+	if e != nil {
+		return e
+	}
+	if !same {
+		return ErrInvalid
+	}
+	return nil
 }
 
 type Worker struct {
@@ -140,7 +163,7 @@ func (w Worker) Dispatch(ctx context.Context) (bool, error) {
 	if n != 1 {
 		return true, ErrInvalid
 	}
-	if state == string(VerifiedFailed) && m.Channel != "sms" && w.SMSFallback != nil && w.SMSFallback.Account != "" {
+	if state == string(VerifiedFailed) && m.Purpose == "" && m.Channel != "sms" && w.SMSFallback != nil && w.SMSFallback.Account != "" {
 		fallback := m
 		fallback.ID = m.ID + ":sms-fallback"
 		fallback.Channel = "sms"
