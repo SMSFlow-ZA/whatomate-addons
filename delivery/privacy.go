@@ -14,7 +14,7 @@ func EraseEmployee(ctx context.Context, tx *sql.Tx, tenant, employeeID string) e
 		return ErrInvalid
 	}
 
-	rows, e := tx.QueryContext(ctx, `SELECT id FROM addon_conversation_delivery WHERE tenant=$1 AND payload->>'employee_id'=$2 ORDER BY id`, tenant, employeeID)
+	rows, e := tx.QueryContext(ctx, `SELECT id FROM addon_conversation_delivery WHERE tenant=$1 AND payload->>'employee_id'=$2 AND COALESCE(payload->>'purpose','')='' ORDER BY id`, tenant, employeeID)
 	if e != nil {
 		return e
 	}

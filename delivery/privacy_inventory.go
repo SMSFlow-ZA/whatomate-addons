@@ -27,7 +27,7 @@ func EmployeePrivacyInventory(ctx context.Context, tx *sql.Tx, tenant, employeeI
 	rows, e := tx.QueryContext(ctx, `SELECT COALESCE(d.payload->>'case_id',''),d.created_at,
  (d.state IN ('sending','accepted','sent','delivered','held_unknown') OR d.provider_id<>'' OR EXISTS(
  SELECT 1 FROM addon_conversation_delivery_receipt r WHERE r.tenant=d.tenant AND r.intent_id=d.id))
- FROM addon_conversation_delivery d WHERE d.tenant=$1 AND d.payload->>'employee_id'=$2
+	 FROM addon_conversation_delivery d WHERE d.tenant=$1 AND d.payload->>'employee_id'=$2 AND COALESCE(d.payload->>'purpose','')=''
  ORDER BY d.id FOR UPDATE OF d`, tenant, employeeID)
 	if e != nil {
 		return out, e

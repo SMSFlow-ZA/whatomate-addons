@@ -186,7 +186,11 @@ func (s Service) SetHold(ctx context.Context, p Principal, h Hold) error {
 		if e != nil {
 			return e
 		}
-		if root.LineageID != root.ID {
+		// Dependent per-subject roots may describe one shared physical object.
+		// A hold on only one view would leave another subject's erasure path
+		// unprotected. Require the operator to explicitly target its canonical
+		// owner lineage; never silently expand a requested hold to a whole case.
+		if root.LineageID != root.ID || root.Scope != h.Scope || len(root.HoldLineageIDs) != 0 || ValidateRecord(root) != nil {
 			return ErrInvalid
 		}
 		old, e := get[Hold](ctx, tx, holdKind, h.ID)

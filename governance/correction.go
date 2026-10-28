@@ -39,7 +39,7 @@ func (s PhysicalService) Correct(ctx context.Context, a api.Actor, scope Scope, 
 			return e
 		}
 		for _, h := range holds {
-			if h.Active && h.LineageID == record.LineageID {
+			if heldBy(record, h) {
 				return ErrHold
 			}
 		}

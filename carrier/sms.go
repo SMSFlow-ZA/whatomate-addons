@@ -59,7 +59,13 @@ func (s Service) authorize(ctx context.Context, m delivery.Message) error {
 			return ErrDenied
 		}
 	} else {
-		if s.SendObserved == nil || s.AuthorizeWindow(ctx, m) != nil {
+		if s.SendObserved == nil {
+			return ErrDenied
+		}
+		if e := s.AuthorizeWindow(ctx, m); e != nil {
+			if m.Purpose == delivery.HandlerEscalation && !errors.Is(e, ErrDenied) {
+				return errors.Join(delivery.ErrAuthorizationRetryable, e)
+			}
 			return ErrDenied
 		}
 	}

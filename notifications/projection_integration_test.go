@@ -400,3 +400,37 @@ func TestTransientIdentityFailureDoesNotConsumeCommittedEvent(t *testing.T) {
 		t.Fatal("recovered identity did not enqueue notice")
 	}
 }
+
+func TestTransientDispatchAuthorityFailureRollsBackBeforeSending(t *testing.T) {
+	s, c, identity := setup(t)
+	ctx := context.Background()
+	if e := s.Activate(ctx); e != nil {
+		t.Fatal(e)
+	}
+	escalate(t, s, c, "dispatch-outage")
+	if _, e := s.Project(ctx); e != nil {
+		t.Fatal(e)
+	}
+	s.Resolve = func(context.Context, string, string) (Identity, error) {
+		return Identity{}, errors.New("temporary identity store outage")
+	}
+	calls := 0
+	w := delivery.Worker{DB: s.DB, Tenant: s.Tenant, Clock: time.Now, LeaseDuration: time.Minute, Authorize: s.Authorize, SendObserved: func(context.Context, delivery.Message) (delivery.Result, string, error) {
+		calls++
+		return delivery.Accepted, "provider", nil
+	}}
+	if _, e := w.Dispatch(ctx); e == nil {
+		t.Fatal("temporary authorization outage permanently held notice")
+	}
+	if got := messages(t, s); len(got) != 1 || got[0].State != "queued" || calls != 0 {
+		t.Fatalf("unsafe pre-send state: %d %+v", calls, got)
+	}
+	s.Resolve = func(context.Context, string, string) (Identity, error) { return identity, nil }
+	w.Authorize = s.Authorize
+	if _, e := w.Dispatch(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if calls != 1 || messages(t, s)[0].State != "accepted" {
+		t.Fatal("recovered authority did not dispatch exactly once")
+	}
+}

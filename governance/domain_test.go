@@ -26,6 +26,33 @@ func TestPermissionsDefaultDenyExactScopeAndKind(t *testing.T) {
 		t.Fatal("unknown request allowed")
 	}
 }
+
+func TestAdditionalHoldLineagesAreBoundedUniqueAndExactScope(t *testing.T) {
+	r := record("recipient-notice", Conversation)
+	r.LineageID = r.ID
+	r.HoldLineageIDs = []string{"cases:case"}
+	if e := ValidateRecord(r); e != nil {
+		t.Fatal(e)
+	}
+	if !heldBy(r, Hold{Scope: r.Scope, LineageID: "cases:case", Active: true}) {
+		t.Fatal("case hold did not cover recipient derivative")
+	}
+	if heldBy(r, Hold{Scope: Scope{OrganizationID: "other", UnitID: "unit"}, LineageID: "cases:case", Active: true}) {
+		t.Fatal("cross-organization hold dependency")
+	}
+	for _, ids := range [][]string{{""}, {"cases:case", "cases:case"}, {"invalid reference"}, {"1", "2", "3", "4", "5", "6", "7", "8", "9"}} {
+		bad := r
+		bad.HoldLineageIDs = ids
+		if ValidateRecord(bad) == nil {
+			t.Fatalf("invalid dependencies accepted: %v", ids)
+		}
+	}
+	removed := r
+	removed.HoldLineageIDs = nil
+	if sameHoldLineages(r, removed) {
+		t.Fatal("hold dependency removal treated as identical")
+	}
+}
 func TestPlanRequiresApprovalAndHoldsBlockDerivedCopies(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	req := SubjectRequest{ID: "request", Scope: scope(), SubjectID: "person", Kind: Delete}

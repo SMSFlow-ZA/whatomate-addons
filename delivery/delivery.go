@@ -41,6 +41,10 @@ const (
 
 var ErrInvalid = errors.New("invalid delivery")
 
+// ErrAuthorizationRetryable means current authority could not be evaluated due
+// to an operational outage. It is only retryable before ANY send adapter call.
+var ErrAuthorizationRetryable = errors.New("delivery authorization temporarily unavailable")
+
 func Migrate(ctx context.Context, db *sql.DB) error {
 	_, e := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS addon_conversation_delivery(id text PRIMARY KEY,tenant text NOT NULL,sender text NOT NULL,payload jsonb NOT NULL,state text NOT NULL DEFAULT 'queued',lease text NOT NULL DEFAULT '',lease_until timestamptz,created_at timestamptz NOT NULL DEFAULT now());CREATE INDEX IF NOT EXISTS addon_conversation_delivery_pending ON addon_conversation_delivery(state,created_at)`)
 	if e != nil {
@@ -121,6 +125,16 @@ func (w Worker) Dispatch(ctx context.Context) (bool, error) {
 	if e = json.Unmarshal(b, &m); e != nil {
 		return false, e
 	}
+	var handlerAuthorization error
+	if m.Purpose == HandlerEscalation {
+		handlerAuthorization = ErrInvalid
+		if w.Authorize != nil {
+			handlerAuthorization = w.Authorize(ctx, m)
+		}
+		if errors.Is(handlerAuthorization, ErrAuthorizationRetryable) {
+			return false, handlerAuthorization
+		}
+	}
 	lease := id + now.UTC().Format(time.RFC3339Nano)
 	if _, e = tx.ExecContext(ctx, `UPDATE addon_conversation_delivery SET state='sending',lease=$2,lease_until=$3 WHERE id=$1`, id, lease, now.Add(w.LeaseDuration)); e != nil {
 		return false, e
@@ -130,7 +144,13 @@ func (w Worker) Dispatch(ctx context.Context) (bool, error) {
 	}
 	state := "held"
 	providerID := ""
-	if w.Authorize != nil && w.Authorize(ctx, m) == nil && (w.Send != nil || w.SendObserved != nil) {
+	authorized := false
+	if m.Purpose == HandlerEscalation {
+		authorized = handlerAuthorization == nil
+	} else if w.Authorize != nil {
+		authorized = w.Authorize(ctx, m) == nil
+	}
+	if authorized && (w.Send != nil || w.SendObserved != nil) {
 		var result Result
 		var sendErr error
 		if w.SendObserved != nil {

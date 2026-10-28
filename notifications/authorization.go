@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/SMSFlow-ZA/whatomate-addons/api"
 	"github.com/SMSFlow-ZA/whatomate-addons/cases"
 	"github.com/SMSFlow-ZA/whatomate-addons/delivery"
 	"github.com/SMSFlow-ZA/whatomate-addons/directory"
@@ -115,9 +116,15 @@ func (s Service) Authorize(ctx context.Context, m delivery.Message) error {
 	}
 	var active bool
 	if e := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM addon_notifications_intent n JOIN addon_notifications_activation a ON a.tenant=n.tenant WHERE n.tenant=$1 AND n.id=$2 AND n.state='queued' AND a.configuration=$3::jsonb AND NOT EXISTS(SELECT 1 FROM addon_notifications_erased x WHERE x.tenant=n.tenant AND x.id=n.id))`, s.Tenant, m.ID, s.configuration()).Scan(&active); e != nil || !active {
+		if e != nil {
+			return errors.Join(delivery.ErrAuthorizationRetryable, e)
+		}
 		return ErrDenied
 	}
 	_, emp, e := s.resolve(ctx, m.CaseID, m.EventVersion, m.RecipientUserID)
+	if e != nil && !errors.Is(e, ErrDenied) && !errors.Is(e, api.ErrDenied) && !errors.Is(e, cases.ErrDenied) && !errors.Is(e, directory.ErrDenied) {
+		return errors.Join(delivery.ErrAuthorizationRetryable, e)
+	}
 	if e != nil || emp.ID != m.EmployeeID || emp.Phone != m.Sender {
 		return ErrDenied
 	}

@@ -109,6 +109,10 @@ type Record struct {
 	Reference              string
 	CreatedAt, RetainUntil time.Time
 	Generation             uint64
+	// HoldLineageIDs are immutable, same-scope dependencies supplied only by a
+	// trusted physical owner. They do not grant access or identify another
+	// subject's object for erasure; they only add hold constraints.
+	HoldLineageIDs []string `json:"hold_lineage_ids,omitempty"`
 }
 type Rule struct {
 	Source           Source
@@ -185,7 +189,44 @@ func ValidateRecord(r Record) error {
 	if !r.Scope.valid() || r.ID == "" || r.SubjectID == "" || r.LineageID == "" || !r.Source.valid() || !validReference(r.Reference) || r.CreatedAt.IsZero() || r.Generation == 0 {
 		return ErrInvalid
 	}
+	if len(r.HoldLineageIDs) > 8 {
+		return ErrInvalid
+	}
+	seen := map[string]bool{}
+	for _, id := range r.HoldLineageIDs {
+		if !validReference(id) || seen[id] {
+			return ErrInvalid
+		}
+		seen[id] = true
+	}
 	return nil
+}
+
+func heldBy(r Record, h Hold) bool {
+	if !h.Active || h.Scope != r.Scope {
+		return false
+	}
+	if h.LineageID == r.LineageID {
+		return true
+	}
+	for _, id := range r.HoldLineageIDs {
+		if h.LineageID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func sameHoldLineages(a, b Record) bool {
+	if a.LineageID != b.LineageID || len(a.HoldLineageIDs) != len(b.HoldLineageIDs) {
+		return false
+	}
+	for i := range a.HoldLineageIDs {
+		if a.HoldLineageIDs[i] != b.HoldLineageIDs[i] {
+			return false
+		}
+	}
+	return true
 }
 func Plan(req SubjectRequest, records []Record, rules []Rule, holds []Hold, now time.Time) ([]JournalEntry, error) {
 	if req.Kind != Delete || !req.Approved {
@@ -209,7 +250,7 @@ func Plan(req SubjectRequest, records []Record, rules []Rule, holds []Hold, now 
 }
 func stateFor(r Record, rules []Rule, holds []Hold, now time.Time) JournalState {
 	for _, h := range holds {
-		if h.Active && h.Scope == r.Scope && h.LineageID == r.LineageID {
+		if heldBy(r, h) {
 			return BlockedHold
 		}
 	}

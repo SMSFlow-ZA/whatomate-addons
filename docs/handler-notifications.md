@@ -49,6 +49,11 @@ roster identity. A handler's home zone need not equal an authorized case unit.
 Missing or ambiguous mapping leaves a durable blocked projection. Reassignment,
 closure, conflicts or revoked permission before dispatch hold the unsent delivery.
 Blocked/held notices are not automatically retried after policy changes.
+For handler notices, a temporary authorization outage returns the typed
+`delivery.ErrAuthorizationRetryable` before committing a sending lease. The
+queued transaction rolls back, the bounded worker returns the error, and a later
+scheduled tick can retry authority evaluation. Once a send adapter has been
+called, errors remain unknown outcomes and never trigger automatic resend.
 
 ## Transport and governance
 
@@ -62,6 +67,17 @@ remain open. Revoked authority leaves receipt evidence pending and preserves the
 last known delivery state.
 
 Notification inventory uses case lineage, so case holds cover notice derivatives.
+Recipient-owned notices have separate per-subject inventory IDs and an immutable,
+owner-validated `HoldLineageIDs` dependency on the same case. This protects the
+notice under the case hold without giving recipient deletion authority over the
+reporter's case. These bounded dependencies cannot be submitted by HTTP or
+removed during rediscovery; deletion, correction and restore all honor them.
+Holds on a shared notification must explicitly target its canonical case lineage.
+The hold API rejects dependent recipient roots without changing storage; it never
+silently expands a recipient-root request into a hold on the entire case.
+Handler carrier routes retain the case reference but omit personal employee/unit
+bindings, and ordinary employee delivery inventory/erasure excludes typed notices.
+The notification owner alone composes their delivery, route and receipt erasure.
 Subject exports contain only state, purpose and case reference; recipient phone,
 employee identity and host-user identity are never exported to the complainant.
 Governed local erasure composes each storage owner's transaction port and retains

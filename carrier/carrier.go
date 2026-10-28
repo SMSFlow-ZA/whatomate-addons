@@ -459,7 +459,14 @@ func (s Service) send(ctx context.Context, m delivery.Message) (delivery.Result,
 	if e != nil || emp.ID != m.EmployeeID {
 		return delivery.Unknown, "", ErrDenied
 	}
-	_, e = s.DB.ExecContext(ctx, `INSERT INTO addon_carrier_route(tenant,account,id,employee_id,unit_id,case_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, m.Tenant, m.Account, m.ID, emp.ID, emp.Zone, m.CaseID)
+	// Handler notices belong to the case owner, not the recipient's personal
+	// conversation lineage. Their notification owner erases this route by ID.
+	employeeID, unitID := emp.ID, emp.Zone
+	if m.Purpose == delivery.HandlerEscalation {
+		employeeID = ""
+		unitID = ""
+	}
+	_, e = s.DB.ExecContext(ctx, `INSERT INTO addon_carrier_route(tenant,account,id,employee_id,unit_id,case_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, m.Tenant, m.Account, m.ID, employeeID, unitID, m.CaseID)
 	if e != nil {
 		return delivery.Unknown, "", e
 	}
