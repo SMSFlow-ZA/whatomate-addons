@@ -30,6 +30,17 @@ type UploadMetadata struct {
 	Audiences  []string  `json:"audiences"`
 	Effective  time.Time `json:"effective_at"`
 	WithdrawAt time.Time `json:"withdraw_at,omitempty"`
+	// Omitted legacy metadata remains policy. Keep omitempty so old canonical
+	// metadata hashes and already processed editions are unchanged.
+	DocumentType string `json:"document_type,omitempty"`
+	Title        string `json:"title,omitempty"`
+}
+
+func (m UploadMetadata) Type() string {
+	if m.DocumentType == "" {
+		return "policy"
+	}
+	return m.DocumentType
 }
 
 // ProcessingJob is a trusted controller port, never an HTTP input. Claim reads
@@ -92,6 +103,9 @@ func MigrateHTTP(ctx context.Context, db *sql.DB) error {
 	return e
 }
 func validMetadata(m UploadMetadata) bool {
+	if (m.Type() != "policy" && m.Type() != "form") || len(m.Title) > 200 || strings.ContainsAny(m.Title, "\r\n\x00") || (m.Type() == "form" && strings.TrimSpace(m.Title) == "") {
+		return false
+	}
 	if m.DocumentID == "" || len(m.DocumentID) > 200 || m.Version == "" || len(m.Version) > 100 || m.Filename == "" || len(m.Filename) > 255 || len(m.MediaType) > 100 || m.Effective.IsZero() || len(m.Audiences) == 0 || len(m.Audiences) > 32 || (!m.WithdrawAt.IsZero() && !m.WithdrawAt.After(m.Effective)) {
 		return false
 	}
