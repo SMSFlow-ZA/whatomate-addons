@@ -99,7 +99,26 @@ func CanNotifyHandler(p Principal, c Case) bool {
 
 // CurrentNotification rechecks current authority and the immutable source event
 // without exporting case content. Event version must still identify this user.
+// CurrentNotificationTx uses the caller's current-actor/source transaction.
+// The caller owns commit and retains its authority barriers through disclosure.
+func CurrentNotificationTx(ctx context.Context, tx *sql.Tx, scope NotificationScope, p Principal, id string, version uint64) (EscalationFact, error) {
+	if tx == nil {
+		return EscalationFact{}, ErrDenied
+	}
+	return currentNotification(ctx, tx, scope, p, id, version)
+}
+
+type notificationReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func CurrentNotification(ctx context.Context, db *sql.DB, scope NotificationScope, p Principal, id string, version uint64) (EscalationFact, error) {
+	if db == nil {
+		return EscalationFact{}, ErrDenied
+	}
+	return currentNotification(ctx, db, scope, p, id, version)
+}
+func currentNotification(ctx context.Context, db notificationReader, scope NotificationScope, p Principal, id string, version uint64) (EscalationFact, error) {
 	if db == nil || !scope.valid() || id == "" || version == 0 {
 		return EscalationFact{}, ErrDenied
 	}
