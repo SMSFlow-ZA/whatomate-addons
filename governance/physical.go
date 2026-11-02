@@ -21,9 +21,10 @@ type PhysicalAdapter interface {
 	Erase(context.Context, *sql.Tx, api.Actor, Record) error
 }
 type PhysicalService struct {
-	DB             *sql.DB
-	Adapters       []PhysicalAdapter
-	SubjectAliases func(context.Context, string, string) ([]string, error)
+	DelegatedWorkerErasure DelegatedWorkerController
+	DB                     *sql.DB
+	Adapters               []PhysicalAdapter
+	SubjectAliases         func(context.Context, string, string) ([]string, error)
 }
 type ExportObject struct {
 	Record  Record          `json:"record"`
