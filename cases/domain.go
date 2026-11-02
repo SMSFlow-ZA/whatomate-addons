@@ -77,6 +77,7 @@ func (p Principal) matches(id string) bool {
 }
 
 type Event struct {
+	RoutingBinding           RoutingBinding
 	CategoryBinding          CategoryBinding
 	ParticipantLinks         []Participant
 	Kind                     string
@@ -88,6 +89,12 @@ type Event struct {
 	Reason                   string
 	RecordedAt, OccurredAt   time.Time
 	OrganizationID, UnitID   string
+}
+
+// RoutingBinding is a trusted host policy receipt, never client authority.
+type RoutingBinding struct {
+	Mode            string `json:"mode"`
+	SettingsVersion int64  `json:"settings_version"`
 }
 
 // CategoryBinding records the exact trusted registry used by a human correction.

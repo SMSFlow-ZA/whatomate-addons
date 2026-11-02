@@ -15,6 +15,7 @@ import (
 type SQLRepository struct {
 	DB               *sql.DB
 	BeforeMutationTx func(context.Context, *sql.Tx) error
+	RoutingBinding   *RoutingBinding
 	// AuthorizeIntake is an optional trusted host ingress gate. It executes in
 	// the write transaction before source locks, idempotent replay or inserts.
 	AuthorizeIntake func(context.Context, *sql.Tx, string, string, Case) error
@@ -65,10 +66,11 @@ func (r *SQLRepository) Begin(ctx context.Context) (Transaction, error) {
 			return nil, e
 		}
 	}
-	return &sqlTransaction{tx: tx, authorizeIntake: r.AuthorizeIntake}, nil
+	return &sqlTransaction{tx: tx, authorizeIntake: r.AuthorizeIntake, routingBinding: r.RoutingBinding}, nil
 }
 
 type sqlTransaction struct {
+	routingBinding  *RoutingBinding
 	tx              *sql.Tx
 	done            bool
 	outcome         CommitOutcome
@@ -105,6 +107,9 @@ func (t *sqlTransaction) Intake(ctx context.Context, org, key, fp string, c Case
 	}
 	if c.ID == "" || c.OrganizationID != org || c.UnitID == "" || c.ContactID == "" || c.Version != 1 || len(c.Events) != 1 || m.OrganizationID != org || m.CaseID != c.ID || m.ContactID != c.ContactID || m.ID == "" || m.CreatedAt.IsZero() {
 		return "", ErrInvalid
+	}
+	if t.routingBinding != nil {
+		c.Events[0].RoutingBinding = *t.routingBinding
 	}
 	payload, e := json.Marshal(c)
 	if e != nil {
@@ -152,6 +157,9 @@ func (t *sqlTransaction) Save(ctx context.Context, c Case, expected uint64) erro
 	}
 	if c.Version != expected+1 || len(c.Events) == 0 || c.Events[len(c.Events)-1].Version != c.Version {
 		return ErrConflict
+	}
+	if t.routingBinding != nil {
+		c.Events[len(c.Events)-1].RoutingBinding = *t.routingBinding
 	}
 	payload, e := json.Marshal(c)
 	if e != nil {

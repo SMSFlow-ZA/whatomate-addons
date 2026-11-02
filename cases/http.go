@@ -12,7 +12,8 @@ import (
 )
 
 type HTTPConfig struct {
-	Enabled bool
+	Enabled         bool
+	RoutingPolicyTx func(context.Context, *sql.Tx, api.Actor, string, string) (RoutingBinding, error)
 	// BeforeMutationTx validates the original trusted actor in each repository
 	// transaction before source reads/locks. Hold host authority until commit.
 	BeforeMutationTx func(context.Context, *sql.Tx, api.Actor) error
@@ -40,6 +41,7 @@ type HTTPConfig struct {
 	AuthorizeEmergency func(context.Context, api.Actor, string, string) error
 }
 type OperatorEventDTO struct {
+	RoutingBinding  RoutingBinding  `json:"routing_binding,omitempty"`
 	Version         uint64          `json:"version"`
 	Kind            string          `json:"kind"`
 	ActorID         string          `json:"actor_id"`
@@ -77,7 +79,7 @@ type AssignmentDTO struct {
 func operatorView(c Case) OperatorDTO {
 	v := OperatorDTO{ID: c.ID, UnitID: c.UnitID, State: c.State, Version: c.Version, Narrative: c.Narrative, Category: c.Category, CategoryBinding: c.CategoryBinding, Snapshot: c.Snapshot, Assignments: []AssignmentDTO{}}
 	for _, event := range c.Events {
-		v.Events = append(v.Events, OperatorEventDTO{Version: event.Version, Kind: event.Kind, ActorID: event.ActorID, Reason: event.Reason, From: event.From, To: event.To, CategoryFrom: event.CategoryFrom, CategoryTo: event.CategoryTo, CategoryBinding: event.CategoryBinding, OccurredAt: event.OccurredAt, RecordedAt: event.RecordedAt})
+		v.Events = append(v.Events, OperatorEventDTO{Version: event.Version, Kind: event.Kind, ActorID: event.ActorID, Reason: event.Reason, From: event.From, To: event.To, CategoryFrom: event.CategoryFrom, CategoryTo: event.CategoryTo, CategoryBinding: event.CategoryBinding, RoutingBinding: event.RoutingBinding, OccurredAt: event.OccurredAt, RecordedAt: event.RecordedAt})
 	}
 	for _, link := range c.Participants {
 		v.Participants = append(v.Participants, ParticipantDTO{ID: link.ID, Role: link.Role})
@@ -137,9 +139,29 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 		path := strings.TrimPrefix(r.URL.Path, "/api/extensions/cases")
 		path = strings.Trim(path, "/")
 		parts := strings.Split(path, "/")
+		if r.Method != http.MethodGet && cfg.RoutingPolicyTx != nil {
+			operation, caseID := "intake", ""
+			if len(parts) > 1 {
+				operation = parts[1]
+				caseID = parts[0]
+			}
+			binding := RoutingBinding{}
+			repo.RoutingBinding = &binding
+			fence := repo.BeforeMutationTx
+			repo.BeforeMutationTx = func(ctx context.Context, tx *sql.Tx) error {
+				if fence != nil {
+					if e := fence(ctx, tx); e != nil {
+						return e
+					}
+				}
+				var err error
+				binding, err = cfg.RoutingPolicyTx(ctx, tx, a, operation, caseID)
+				return err
+			}
+		}
 		// List/fact queries do not use Repository.Begin. Keep the same host
 		// authority fence across these disclosures without nested writer fences.
-		if r.Method == http.MethodGet && (path == "" || path == "facts") && cfg.BeforeMutationTx != nil {
+		if r.Method == http.MethodGet && (path == "" || path == "facts" || path == "dispatch") && cfg.BeforeMutationTx != nil {
 			tx, err := db.BeginTx(r.Context(), nil)
 			if err != nil {
 				caseError(w, err)
@@ -150,6 +172,15 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 				caseError(w, err)
 				return
 			}
+		}
+		if path == "dispatch" && r.Method == http.MethodGet {
+			views, err := ListDispatch(r.Context(), db, p, a.OrganizationID)
+			if err != nil {
+				caseError(w, err)
+				return
+			}
+			api.Write(w, 200, views)
+			return
 		}
 		if path == "" {
 			if r.Method == http.MethodGet {
@@ -287,7 +318,11 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 			}
 		case "assignment", "participants":
 			// Load and authorize before resolving any candidate or revealing case unit.
-			c, e = s.Read(r.Context(), p, parts[0])
+			if parts[1] == "assignment" {
+				c, e = s.ReadRouting(r.Context(), p, parts[0])
+			} else {
+				c, e = s.Read(r.Context(), p, parts[0])
+			}
 			if e != nil {
 				caseError(w, e)
 				return
@@ -342,6 +377,10 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 		}
 		if e != nil {
 			caseError(w, e)
+			return
+		}
+		if parts[1] == "assignment" && CanDispatch(p, c) {
+			api.Write(w, 200, DispatchView(c))
 			return
 		}
 		if !CanRead(p, c) {
