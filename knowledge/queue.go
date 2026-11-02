@@ -105,13 +105,28 @@ func validMetadata(m UploadMetadata) bool {
 	return true
 }
 func (q *ProcessingQueue) enqueue(ctx context.Context, tenant, actor string, input []byte, m UploadMetadata) (string, error) {
+	return q.enqueueGuarded(ctx, tenant, actor, input, m, nil)
+}
+func (q *ProcessingQueue) enqueueGuarded(ctx context.Context, tenant, actor string, input []byte, m UploadMetadata, guard func(context.Context, *sql.Tx) error) (string, error) {
 	if q.db == nil || tenant == "" || actor == "" || len(input) == 0 || len(input) > MaxUploadBytes || !validMetadata(m) {
 		return "", ErrDenied
 	}
 	b, _ := json.Marshal(m)
 	id := randomID()
-	_, e := q.db.ExecContext(ctx, `INSERT INTO addon_knowledge_jobs(id,tenant,actor,input,input_hash,metadata,metadata_hash)VALUES($1,$2,$3,$4,$5,$6,$7)`, id, tenant, actor, input, digest(input), b, digest(b))
-	return id, e
+	tx, e := q.db.BeginTx(ctx, nil)
+	if e != nil {
+		return "", e
+	}
+	defer tx.Rollback()
+	if guard != nil {
+		if e = guard(ctx, tx); e != nil {
+			return "", e
+		}
+	}
+	if _, e = tx.ExecContext(ctx, `INSERT INTO addon_knowledge_jobs(id,tenant,actor,input,input_hash,metadata,metadata_hash)VALUES($1,$2,$3,$4,$5,$6,$7)`, id, tenant, actor, input, digest(input), b, digest(b)); e != nil {
+		return "", e
+	}
+	return id, tx.Commit()
 }
 
 // Expired claims become unknown, never queued: a crashed controller's worker

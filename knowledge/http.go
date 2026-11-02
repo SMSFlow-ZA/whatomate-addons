@@ -18,6 +18,9 @@ type HTTPConfig struct {
 	// Authorize resolves current host roles AND exact audience grants for any
 	// principal, including the original reviewer at publication time.
 	Authorize func(context.Context, string, string, string, string) bool
+	// AuthorizeIngress runs before any upload row write, inside its transaction.
+	// Hosts can serialize erasure/replay guards without accepting browser proof.
+	AuthorizeIngress func(context.Context, *sql.Tx, api.Actor, UploadMetadata) error
 }
 type httpHandler struct {
 	db  *sql.DB
@@ -148,8 +151,16 @@ func (h *httpHandler) upload(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, 403, "denied")
 		return
 	}
-	id, e := NewProcessingQueue(h.db).enqueue(r.Context(), a.OrganizationID, a.UserID, input, m)
+	var guard func(context.Context, *sql.Tx) error
+	if h.cfg.AuthorizeIngress != nil {
+		guard = func(ctx context.Context, tx *sql.Tx) error { return h.cfg.AuthorizeIngress(ctx, tx, a, m) }
+	}
+	id, e := NewProcessingQueue(h.db).enqueueGuarded(r.Context(), a.OrganizationID, a.UserID, input, m, guard)
 	if e != nil {
+		if errors.Is(e, ErrDenied) {
+			api.Error(w, 403, "ingress_denied")
+			return
+		}
 		api.Error(w, 503, "persistence_unavailable")
 		return
 	}
@@ -256,6 +267,18 @@ func (h *httpHandler) job(w http.ResponseWriter, r *http.Request, id, action str
 	defer tx.Rollback()
 	var v JobView
 	var metadata, doc, ev, ap []byte
+	if action != "" && h.cfg.AuthorizeIngress != nil {
+		var raw []byte
+		var prior UploadMetadata
+		if e = tx.QueryRowContext(r.Context(), `SELECT metadata FROM addon_knowledge_jobs WHERE tenant=$1 AND id=$2`, a.OrganizationID, id).Scan(&raw); e != nil || json.Unmarshal(raw, &prior) != nil {
+			api.Error(w, 404, "not_found")
+			return
+		}
+		if e = h.cfg.AuthorizeIngress(r.Context(), tx, a, prior); e != nil {
+			api.Error(w, 403, "ingress_denied")
+			return
+		}
+	}
 	e = tx.QueryRowContext(r.Context(), `SELECT id,actor,status,version,metadata,document,evidence,approval,COALESCE(failure,'') FROM addon_knowledge_jobs WHERE tenant=$1 AND id=$2 FOR UPDATE`, a.OrganizationID, id).Scan(&v.ID, &v.ActorID, &v.Status, &v.Version, &metadata, &doc, &ev, &ap, &v.Failure)
 	if errors.Is(e, sql.ErrNoRows) {
 		api.Error(w, 404, "not_found")
