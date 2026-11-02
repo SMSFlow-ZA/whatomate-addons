@@ -73,6 +73,10 @@ func (s PhysicalService) ReviewInventoryTx(ctx context.Context, tx *sql.Tx, a ap
 	if e != nil {
 		return nil, e
 	}
+	current, e = s.completedInventory(ctx, t, a, req, current)
+	if e != nil {
+		return nil, e
+	}
 	selected := []Record{}
 	for _, r := range saved {
 		if r.SubjectID == subject {

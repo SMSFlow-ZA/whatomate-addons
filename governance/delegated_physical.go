@@ -71,6 +71,16 @@ func (s PhysicalService) EraseDelegatedTx(ctx context.Context, tx *sql.Tx, permi
 				records = append(records, r)
 			}
 		}
+		for _, actor := range actors {
+			_, e = s.completedInventory(ctx, t, actor, req, records)
+			if e != nil {
+				return nil, e
+			}
+		}
+		records, e = s.completedInventory(ctx, t, a, req, records)
+		if e != nil {
+			return nil, e
+		}
 		rules, e := list[Rule](ctx, t, ruleKind)
 		if e != nil {
 			return nil, e

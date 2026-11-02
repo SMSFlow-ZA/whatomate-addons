@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"time"
@@ -37,12 +38,41 @@ func sha256Hex(s string) bool {
 // invoking the trusted owner. Filesystem removal cannot roll back with SQL: on
 // an unknown/failed commit, keep the application unavailable and reconcile the
 // durable controller receipt/absence before recording a confirmed journal result.
+// WorkerErasureControllerTx keeps source authorization and custody checks in the
+// governance transaction. It must not commit or roll back the supplied transaction.
+type WorkerErasureControllerTx func(context.Context, *sql.Tx, api.Actor, Record) (WorkerErasureReceipt, error)
+
 func (s PhysicalService) CompleteWorkerErasure(ctx context.Context, a api.Actor, scope Scope, requestID, recordID string, expected uint64, controller WorkerErasureController) (JournalEntry, error) {
 	if controller == nil || expected == 0 {
 		return JournalEntry{}, ErrInvalid
 	}
 	var result JournalEntry
 	e := s.within(ctx, a, scope, DeletionRecord, func(t *sqlTransaction) error {
+		var e error
+		result, e = s.CompleteWorkerErasureTx(ctx, t.tx, a, scope, requestID, recordID, expected, func(ctx context.Context, _ *sql.Tx, a api.Actor, r Record) (WorkerErasureReceipt, error) {
+			return controller(ctx, a, r)
+		})
+		return e
+	})
+	return result, e
+}
+
+// CompleteWorkerErasureTx leaves commit ownership to the trusted host. The host
+// fences current authentication after scope locks and before source row locks.
+// No caller-supplied success flag is accepted: controller evidence is mandatory.
+func (s PhysicalService) CompleteWorkerErasureTx(ctx context.Context, tx *sql.Tx, a api.Actor, scope Scope, requestID, recordID string, expected uint64, controller WorkerErasureControllerTx) (JournalEntry, error) {
+	if tx == nil || controller == nil || expected == 0 {
+		return JournalEntry{}, ErrInvalid
+	}
+	if _, e := api.ActorFrom(api.WithActor(ctx, a)); e != nil || a.OrganizationID != scope.OrganizationID || !a.Allows(string(DeletionRecord), scope.UnitID) {
+		return JournalEntry{}, ErrDenied
+	}
+	if e := LockScopesTx(ctx, tx, []Scope{scope}); e != nil {
+		return JournalEntry{}, e
+	}
+	t := &sqlTransaction{tx: tx, scope: scope}
+	var result JournalEntry
+	e := func() error {
 		req, e := get[SubjectRequest](ctx, t, requestKind, requestID)
 		if e != nil {
 			return e
@@ -83,7 +113,7 @@ func (s PhysicalService) CompleteWorkerErasure(ctx context.Context, a api.Actor,
 		}
 		// The controller is invoked only after authorization and hold checks, inside
 		// their serialized scope transaction. It must itself reverify real absence.
-		receipt, e := controller(ctx, a, r)
+		receipt, e := controller(ctx, tx, a, r)
 		if e != nil {
 			return e
 		}
@@ -101,6 +131,10 @@ func (s PhysicalService) CompleteWorkerErasure(ctx context.Context, a api.Actor,
 		if e = put(ctx, t, "worker_erasure_receipt", receiptKey, receipt); e != nil {
 			return e
 		}
+		if entry.State == RecordedApplied && entry.ConfirmationReference == "worker-receipt:"+receipt.ReceiptHash {
+			result = entry
+			return nil
+		}
 		entry.State = RecordedApplied
 		entry.ConfirmationReference = "worker-receipt:" + receipt.ReceiptHash
 		entry.Version++
@@ -113,9 +147,6 @@ func (s PhysicalService) CompleteWorkerErasure(ctx context.Context, a api.Actor,
 		}
 		result = entry
 		return nil
-	})
-	if e != nil {
-		return JournalEntry{}, e
-	}
-	return result, nil
+	}()
+	return result, e
 }
