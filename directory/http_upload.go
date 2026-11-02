@@ -24,8 +24,26 @@ func (h *directoryHTTP) savePreview(w http.ResponseWriter, r *http.Request, a ap
 		dto.Employees = append(dto.Employees, toDTO(em))
 	}
 	payload, _ := json.Marshal(dto.Employees)
-	_, e := h.db.ExecContext(r.Context(), `INSERT INTO directory_previews(tenant,id,digest,expected_version,payload,created_by,created_at,source_sha256) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`, a.OrganizationID, dto.PreviewID, dto.Digest, int64(version), string(payload), a.UserID, dto.CreatedAt, source)
+	tx, e := h.db.BeginTx(r.Context(), nil)
 	if e != nil {
+		api.Error(w, 503, "unavailable")
+		return
+	}
+	defer tx.Rollback()
+	ids := make([]string, len(dto.Employees))
+	for i, em := range dto.Employees {
+		ids[i] = em.ID
+	}
+	if h.cfg.AuthorizeAccess != nil && h.cfg.AuthorizeAccess(r.Context(), tx, a, "directory:import", ids) != nil {
+		api.Error(w, 403, "denied")
+		return
+	}
+	_, e = tx.ExecContext(r.Context(), `INSERT INTO directory_previews(tenant,id,digest,expected_version,payload,created_by,created_at,source_sha256) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`, a.OrganizationID, dto.PreviewID, dto.Digest, int64(version), string(payload), a.UserID, dto.CreatedAt, source)
+	if e != nil {
+		api.Error(w, 503, "unavailable")
+		return
+	}
+	if e = tx.Commit(); e != nil {
 		api.Error(w, 503, "unavailable")
 		return
 	}

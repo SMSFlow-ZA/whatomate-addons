@@ -16,9 +16,13 @@ import (
 
 // HTTPConfig is trusted host configuration. An invalid clock or freshness denies service.
 type HTTPConfig struct {
-	Freshness time.Duration
-	Clock     func() time.Time
-	Worker    *LegacyWorker
+	// AuthorizeAccess is an optional trusted host gate. nil tx is a read/preflight;
+	// mutations call it in their transaction before source locks and with every
+	// incoming employee ID. Hosts can fence live authority and erasure tombstones.
+	AuthorizeAccess func(context.Context, *sql.Tx, api.Actor, string, []string) error
+	Freshness       time.Duration
+	Clock           func() time.Time
+	Worker          *LegacyWorker
 }
 type employeeDTO struct {
 	ID         string `json:"id"`
@@ -90,6 +94,10 @@ func (h *directoryHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.db == nil || h.cfg.Freshness <= 0 || h.cfg.Clock == nil || h.cfg.Clock().IsZero() {
 		api.Error(w, 503, "unavailable")
+		return
+	}
+	if h.cfg.AuthorizeAccess != nil && h.cfg.AuthorizeAccess(r.Context(), nil, a, permission, nil) != nil {
+		api.Error(w, 403, "denied")
 		return
 	}
 	store, e := NewPostgresStore(h.db, a.OrganizationID, a.UserID)
@@ -199,7 +207,20 @@ func (h *directoryHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		n, e := Revoke(s, in.EmployeeID)
 		if e == nil {
-			e = store.CompareAndSwap(r.Context(), s.Version, n)
+			var tx *sql.Tx
+			tx, e = h.db.BeginTx(r.Context(), nil)
+			if e == nil {
+				defer tx.Rollback()
+				if h.cfg.AuthorizeAccess != nil {
+					e = h.cfg.AuthorizeAccess(r.Context(), tx, a, "directory:revoke", []string{in.EmployeeID})
+				}
+				if e == nil {
+					e = store.compareAndSwapTx(r.Context(), tx, s.Version, n)
+				}
+				if e == nil {
+					e = tx.Commit()
+				}
+			}
 		}
 		if e != nil {
 			writeDirectoryError(w, e)
@@ -212,7 +233,9 @@ func toDTO(e Employee) employeeDTO {
 	return employeeDTO{ID: e.ID, Phone: e.Phone, Zone: e.Zone, Department: e.Department, Active: e.Active}
 }
 func writeDirectoryError(w http.ResponseWriter, e error) {
-	if errors.Is(e, ErrConflict) {
+	if errors.Is(e, ErrDenied) || errors.Is(e, api.ErrDenied) {
+		api.Error(w, 403, "denied")
+	} else if errors.Is(e, ErrConflict) {
 		api.Error(w, 409, "version_conflict")
 	} else {
 		api.Error(w, 503, "unavailable")
@@ -272,6 +295,10 @@ func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Ac
 		return
 	}
 	defer tx.Rollback()
+	if h.cfg.AuthorizeAccess != nil && h.cfg.AuthorizeAccess(r.Context(), tx, a, "directory:approve", nil) != nil {
+		api.Error(w, 403, "denied")
+		return
+	}
 	d, e := scanPreview(tx.QueryRowContext(r.Context(), previewSelect+` FOR UPDATE`, a.OrganizationID, in.PreviewID))
 	if errors.Is(e, sql.ErrNoRows) {
 		api.Error(w, 404, "not_found")
@@ -288,6 +315,14 @@ func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Ac
 	rows := make([]Employee, len(d.Employees))
 	for i, em := range d.Employees {
 		rows[i] = Employee{ID: em.ID, Phone: em.Phone, Zone: em.Zone, Department: em.Department, Active: em.Active}
+	}
+	ids := make([]string, len(rows))
+	for i, em := range rows {
+		ids[i] = em.ID
+	}
+	if h.cfg.AuthorizeAccess != nil && h.cfg.AuthorizeAccess(r.Context(), tx, a, "directory:approve", ids) != nil {
+		api.Error(w, 403, "denied")
+		return
 	}
 	p, e := NewPreview(rows)
 	if e != nil || p.Digest() != d.Digest {
