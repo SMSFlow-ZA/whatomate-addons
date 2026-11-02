@@ -111,7 +111,31 @@ func (s AccessStore) ReplaceVersioned(ctx context.Context, change AccessReplacem
 		return AccessSnapshot{}, err
 	}
 	defer tx.Rollback()
-	if err = s.LockVersionedTx(ctx, tx, change.OrganizationID, change.UserID); err != nil {
+	out, err := s.ReplaceVersionedTx(ctx, tx, change, apply, hostCheck)
+	if err != nil {
+		return AccessSnapshot{}, err
+	}
+	if !apply {
+		return out, nil
+	}
+	if err = tx.Commit(); err != nil {
+		return AccessSnapshot{}, ErrAccessCommitUnknown
+	}
+	return out, nil
+}
+
+// ReplaceVersionedTx applies the same validation, CAS, host check and immutable
+// grant audit inside a caller-owned transaction. Callers coordinate their own
+// membership, session revocation and command idempotency writes atomically.
+// apply=false does not write, but callers must roll back preview transactions.
+func (s AccessStore) ReplaceVersionedTx(ctx context.Context, tx *sql.Tx, change AccessReplacement, apply bool, hostCheck AccessHostCheck) (AccessSnapshot, error) {
+	if tx == nil || hostCheck == nil {
+		return AccessSnapshot{}, ErrDenied
+	}
+	if err := validateReplacement(change); err != nil {
+		return AccessSnapshot{}, err
+	}
+	if err := s.LockVersionedTx(ctx, tx, change.OrganizationID, change.UserID); err != nil {
 		return AccessSnapshot{}, err
 	}
 	before, err := accessSnapshotTx(ctx, tx, change.OrganizationID, change.UserID)
@@ -129,9 +153,6 @@ func (s AccessStore) ReplaceVersioned(ctx context.Context, change AccessReplacem
 	}
 	if err = writeAccessReplacement(ctx, tx, change, before); err != nil {
 		return AccessSnapshot{}, err
-	}
-	if err = tx.Commit(); err != nil {
-		return AccessSnapshot{}, ErrAccessCommitUnknown
 	}
 	return AccessSnapshot{Version: before.Version + 1, Grants: append([]Grant{}, change.Grants...)}, nil
 }

@@ -87,15 +87,8 @@ func (s AccessStore) LinkIdentity(ctx context.Context, org, user, employee strin
 		return e
 	}
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(ctx, `INSERT INTO addon_api_identity_links(organization_id,employee_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, org, employee, user); e != nil {
+	if e = s.LinkIdentityTx(ctx, tx, org, user, employee, true); e != nil {
 		return e
-	}
-	var owner string
-	if e = tx.QueryRowContext(ctx, `SELECT user_id FROM addon_api_identity_links WHERE organization_id=$1 AND employee_id=$2`, org, employee).Scan(&owner); e != nil {
-		return e
-	}
-	if owner != user {
-		return ErrDenied
 	}
 	return tx.Commit()
 }
