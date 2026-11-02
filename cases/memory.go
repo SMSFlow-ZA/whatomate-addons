@@ -70,7 +70,9 @@ func (t *memoryTx) Intake(ctx context.Context, org, key, fp string, c Case, m Ou
 	}
 	t.cases[c.ID] = clone(c)
 	t.intakes[k] = intakeRecord{fp, c.ID}
-	t.outbox[m.ID] = m
+	if c.State != Draft {
+		t.outbox[m.ID] = m
+	}
 	return c.ID, nil
 }
 func (t *memoryTx) Load(ctx context.Context, id string) (Case, error) {
@@ -104,6 +106,12 @@ func (t *memoryTx) Save(ctx context.Context, c Case, expected uint64) error {
 		return ErrInvalid
 	}
 	t.cases[c.ID] = clone(c)
+	if old.State == Draft && c.State == Submitted {
+		m := submissionAcknowledgement(c)
+		if _, exists := t.outbox[m.ID]; !exists {
+			t.outbox[m.ID] = m
+		}
+	}
 	return nil
 }
 func (t *memoryTx) Commit(ctx context.Context) (CommitOutcome, error) {

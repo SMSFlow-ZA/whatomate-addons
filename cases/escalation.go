@@ -16,7 +16,7 @@ func (s Service) Escalate(ctx context.Context, p Principal, id string, v uint64,
 		if !canManage(p, *c) {
 			return ErrDenied
 		}
-		if c.State == Draft || c.State == Resolved || c.State == Closed {
+		if c.State == Draft || c.State == Cancelled || c.State == Resolved || c.State == Closed {
 			return ErrInvalidTransition
 		}
 		route, e := Route(*c, candidates)

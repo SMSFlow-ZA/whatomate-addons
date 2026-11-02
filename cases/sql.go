@@ -124,6 +124,9 @@ func (t *sqlTransaction) Intake(ctx context.Context, org, key, fp string, c Case
 	if e = t.appendEvent(ctx, c, c.Events[0]); e != nil {
 		return "", e
 	}
+	if c.State == Draft {
+		return c.ID, nil
+	}
 	payload, e = json.Marshal(m)
 	if e != nil {
 		return "", e
@@ -176,7 +179,20 @@ func (t *sqlTransaction) Save(ctx context.Context, c Case, expected uint64) erro
 	if n != 1 {
 		return ErrConflict
 	}
-	return t.appendEvent(ctx, c, c.Events[len(c.Events)-1])
+	event := c.Events[len(c.Events)-1]
+	if e = t.appendEvent(ctx, c, event); e != nil {
+		return e
+	}
+	if event.From == Draft && event.To == Submitted {
+		m := submissionAcknowledgement(c)
+		raw, e := json.Marshal(m)
+		if e != nil {
+			return e
+		}
+		_, e = t.tx.ExecContext(ctx, `INSERT INTO addon_cases_outbox(id,organization_id,case_id,contact_id,kind,created_at,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(case_id,kind) DO NOTHING`, m.ID, m.OrganizationID, m.CaseID, m.ContactID, m.Kind, m.CreatedAt, string(raw))
+		return e
+	}
+	return nil
 }
 func (t *sqlTransaction) appendEvent(ctx context.Context, c Case, event Event) error {
 	if event.Version != c.Version || event.OrganizationID != c.OrganizationID || event.UnitID != c.UnitID || event.ActorID == "" || event.RecordedAt.IsZero() || event.OccurredAt.IsZero() {

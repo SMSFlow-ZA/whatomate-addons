@@ -148,7 +148,7 @@ func Reconstruct(events []cases.ReportFact, asOf time.Time) (Facts, error) {
 			if e.RecordedAt.After(asOf) || e.OccurredAt.After(asOf) {
 				continue
 			}
-			if created.IsZero() && e.To != cases.Draft {
+			if created.IsZero() && e.To != cases.Draft && e.To != cases.Cancelled {
 				created = e.OccurredAt
 			}
 			if !created.IsZero() {

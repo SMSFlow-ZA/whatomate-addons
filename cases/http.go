@@ -266,6 +266,27 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 			serveEmergencyRead(w, r, s, cfg, a, p, parts[0])
 			return
 		}
+		if parts[1] == "cancel-draft" {
+			if r.Method != http.MethodPost {
+				api.Error(w, 405, "method_not_allowed")
+				return
+			}
+			var in struct {
+				ExpectedVersion uint64 `json:"expected_version"`
+				IdempotencyKey  string `json:"idempotency_key"`
+			}
+			if api.Decode(r, &in) != nil || in.ExpectedVersion == 0 {
+				api.Error(w, 400, "invalid_input")
+				return
+			}
+			c, err := s.CancelDraft(r.Context(), p, parts[0], in.ExpectedVersion, in.IdempotencyKey)
+			if err != nil {
+				caseError(w, err)
+				return
+			}
+			api.Write(w, 200, safeView(p, c))
+			return
+		}
 		// All mutation DTOs use one strict schema and optimistic expected_version.
 		var in struct {
 			ExpectedVersion uint64          `json:"expected_version"`

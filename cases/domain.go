@@ -12,6 +12,7 @@ type State string
 
 const (
 	Draft        State = "Draft"
+	Cancelled    State = "Cancelled"
 	Submitted    State = "Submitted"
 	Assigned     State = "Assigned"
 	InProgress   State = "InProgress"
@@ -110,6 +111,7 @@ type Classification struct {
 }
 
 type Case struct {
+	Cancellation        *CancellationReceipt `json:",omitempty"`
 	CategoryBinding     CategoryBinding
 	Snapshot            Classification
 	Narrative, Category string
@@ -242,6 +244,10 @@ func Route(c Case, candidates []Candidate) (Assignment, error) {
 	return Assignment{}, ErrNoRoute
 }
 func clone(c Case) Case {
+	if c.Cancellation != nil {
+		receipt := *c.Cancellation
+		c.Cancellation = &receipt
+	}
 	c.Participants = append([]Participant(nil), c.Participants...)
 	c.Assignments = append([]Assignment(nil), c.Assignments...)
 	c.Events = append([]Event(nil), c.Events...)

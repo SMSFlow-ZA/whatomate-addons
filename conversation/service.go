@@ -354,7 +354,11 @@ func (s Service) AuthorizeDelivery(ctx context.Context, m delivery.Message) erro
 		return ErrDenied
 	}
 	if m.CaseID != "" {
-		_, e = (cases.Service{Repository: &cases.SQLRepository{DB: s.DB}}).Read(ctx, p, m.CaseID)
+		var c cases.Case
+		c, e = (cases.Service{Repository: &cases.SQLRepository{DB: s.DB}}).Read(ctx, p, m.CaseID)
+		if e == nil && (c.State == cases.Draft || c.State == cases.Cancelled) {
+			return ErrDenied
+		}
 	}
 	return e
 }

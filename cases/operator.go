@@ -36,7 +36,7 @@ func EmployeeView(c Case) EmployeeDTO {
 
 // Operator edits require assignment work scope or explicit triage scope, and subjects always lose.
 func canManage(p Principal, c Case) bool {
-	return !operatorConflict(p, c) && (scoped(p, c, AssignTriage) || CanWork(p, c))
+	return c.State != Cancelled && !operatorConflict(p, c) && (scoped(p, c, AssignTriage) || CanWork(p, c))
 }
 func (s Service) mutate(ctx context.Context, p Principal, id string, expected uint64, occurred time.Time, reason, kind string, edit func(*Case) error) (Case, error) {
 	if s.Repository == nil || occurred.IsZero() {
@@ -123,7 +123,7 @@ func (s Service) Reassign(ctx context.Context, p Principal, id string, v uint64,
 		if !canManage(p, *c) {
 			return ErrDenied
 		}
-		if c.State == Draft || c.State == Resolved || c.State == Closed {
+		if c.State == Draft || c.State == Cancelled || c.State == Resolved || c.State == Closed {
 			return ErrInvalidTransition
 		}
 		a, e := Route(*c, candidates)

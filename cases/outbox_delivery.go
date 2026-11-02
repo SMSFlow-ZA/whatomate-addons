@@ -50,7 +50,7 @@ func (r *SQLRepository) ClaimOutbox(ctx context.Context, tenant, worker string, 
 		return OutboxClaim{}, false, e
 	}
 	var raw []byte
-	e = tx.QueryRowContext(ctx, `SELECT o.payload FROM addon_cases_delivery d JOIN addon_cases_outbox o ON o.id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.state='pending' ORDER BY o.created_at,o.id FOR UPDATE OF d SKIP LOCKED LIMIT 1`, tenant).Scan(&raw)
+	e = tx.QueryRowContext(ctx, `SELECT o.payload FROM addon_cases_delivery d JOIN addon_cases_outbox o ON o.id=d.id AND o.organization_id=d.organization_id JOIN addon_cases_case c ON c.id=o.case_id AND c.organization_id=o.organization_id WHERE d.organization_id=$1 AND d.state='pending' AND c.payload->>'State' NOT IN ('Draft','Cancelled') ORDER BY o.created_at,o.id FOR UPDATE OF d SKIP LOCKED LIMIT 1`, tenant).Scan(&raw)
 	if errors.Is(e, sql.ErrNoRows) {
 		return OutboxClaim{}, false, tx.Commit()
 	}
