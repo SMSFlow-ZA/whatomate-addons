@@ -6,12 +6,23 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"sync/atomic"
 	"time"
 
 	"github.com/SMSFlow-ZA/whatomate-addons/api"
 )
+
+// ErrDelegationExpired distinguishes a bounded lease/approval deadline from
+// actual source denial. It never authorizes renewal or a retry.
+var ErrDelegationExpired = errors.New("delegation lease or approval expired")
+
+type delegationDenial struct{ cause error }
+
+func (e delegationDenial) Error() string   { return ErrDenied.Error() }
+func (e delegationDenial) Unwrap() []error { return []error{ErrDenied, e.cause} }
+func delegationDenied(cause error) error   { return delegationDenial{cause} }
 
 // DelegationLease is an opaque durable attempt identity, never authentication.
 type DelegationLease struct {
@@ -119,19 +130,22 @@ func (s DelegatedExecutor) WithValidatedDelegationTx(ctx context.Context, tx *sq
 	return fn(cap)
 }
 func (c *DelegatedAuthority) check(ctx context.Context, tx *sql.Tx, a api.Actor) error {
-	if c == nil || c.alive == nil || !c.alive.Load() || tx == nil || tx != c.tx || a.MFA || a.PrimarySessionAuthorized || a.SessionID != "" || !c.actorHashes[delegateHash(a)] || !time.Now().Before(c.grant.ExpiresAt) {
+	if c == nil || c.alive == nil || !c.alive.Load() || tx == nil || tx != c.tx || a.MFA || a.PrimarySessionAuthorized || a.SessionID != "" || !c.actorHashes[delegateHash(a)] {
 		return ErrDenied
+	}
+	if !time.Now().Before(c.grant.ExpiresAt) {
+		return delegationDenied(ErrDelegationExpired)
 	}
 	// A committed/rolled-back sql.Tx must invalidate the permit even if an errant
 	// callback retains the pointer before its deferred lifetime invalidation.
 	var open int
 	if e := tx.QueryRowContext(ctx, `SELECT 1`).Scan(&open); e != nil {
-		return ErrDenied
+		return delegationDenied(e)
 	}
 	// The durable lease is locked by the host validator for the entire callback.
 	// Rechecking exact lease identity/version and purpose protects same-tx changes.
 	if e := c.validator.RecheckDelegationTx(ctx, tx, c.grant.Lease, c.grant.PlanDigest, c.grant.RestoreGeneration); e != nil {
-		return ErrDenied
+		return delegationDenied(e)
 	}
 
 	return nil
