@@ -77,6 +77,7 @@ func (p Principal) matches(id string) bool {
 }
 
 type Event struct {
+	CategoryBinding          CategoryBinding
 	ParticipantLinks         []Participant
 	Kind                     string
 	CategoryFrom, CategoryTo string
@@ -88,6 +89,13 @@ type Event struct {
 	RecordedAt, OccurredAt   time.Time
 	OrganizationID, UnitID   string
 }
+
+// CategoryBinding records the exact trusted registry used by a human correction.
+// It never implies an AI decision or a unit-to-audience mapping.
+type CategoryBinding struct {
+	Audience string `json:"audience"`
+	Version  int64  `json:"version"`
+}
 type Classification struct {
 	Zone       string `json:"zone"`
 	Department string `json:"department"`
@@ -95,6 +103,7 @@ type Classification struct {
 }
 
 type Case struct {
+	CategoryBinding     CategoryBinding
 	Snapshot            Classification
 	Narrative, Category string
 

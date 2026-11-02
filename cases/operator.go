@@ -65,7 +65,7 @@ func (s Service) mutate(ctx context.Context, p Principal, id string, expected ui
 		return Case{}, ErrConflict
 	}
 	next.Version++
-	next.Events = append(next.Events, Event{ParticipantLinks: append([]Participant(nil), next.Participants...), Kind: kind, CategoryFrom: c.Category, CategoryTo: next.Category, Assignments: append([]Assignment(nil), next.Assignments...), Version: next.Version, ActorID: p.ID, From: c.State, To: next.State, Reason: reason, RecordedAt: time.Now().UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
+	next.Events = append(next.Events, Event{ParticipantLinks: append([]Participant(nil), next.Participants...), Kind: kind, CategoryFrom: c.Category, CategoryTo: next.Category, CategoryBinding: next.CategoryBinding, Assignments: append([]Assignment(nil), next.Assignments...), Version: next.Version, ActorID: p.ID, From: c.State, To: next.State, Reason: reason, RecordedAt: time.Now().UTC(), OccurredAt: occurred.UTC(), OrganizationID: c.OrganizationID, UnitID: c.UnitID})
 	if e = tx.Save(ctx, next, expected); e != nil {
 		return Case{}, e
 	}
@@ -85,6 +85,9 @@ func (s Service) mutate(ctx context.Context, p Principal, id string, expected ui
 	return next, nil
 }
 func (s Service) CorrectCategory(ctx context.Context, p Principal, id string, v uint64, category, reason string, at time.Time) (Case, error) {
+	return s.correctCategory(ctx, p, id, v, category, reason, at, CategoryBinding{})
+}
+func (s Service) correctCategory(ctx context.Context, p Principal, id string, v uint64, category, reason string, at time.Time, binding CategoryBinding) (Case, error) {
 	if strings.TrimSpace(category) == "" || strings.TrimSpace(reason) == "" {
 		return Case{}, ErrInvalid
 	}
@@ -93,6 +96,7 @@ func (s Service) CorrectCategory(ctx context.Context, p Principal, id string, v 
 			return ErrDenied
 		}
 		c.Category = category
+		c.CategoryBinding = binding
 		return nil
 	})
 }

@@ -16,6 +16,9 @@ type HTTPConfig struct {
 	// BeforeMutationTx validates the original trusted actor in each repository
 	// transaction before source reads/locks. Hold host authority until commit.
 	BeforeMutationTx func(context.Context, *sql.Tx, api.Actor) error
+	// ValidateCategoryTx validates a human-selected registry binding after the
+	// actor fence and before case source locks. Nil retains legacy free text.
+	ValidateCategoryTx func(context.Context, *sql.Tx, api.Actor, string, CategoryBinding) error
 	// BeforeAssignmentTx runs before the operator fence and must lock operator
 	// and candidate access barriers in stable order before validating candidates.
 	BeforeAssignmentTx func(context.Context, *sql.Tx, api.Actor, []Principal) error
@@ -37,28 +40,30 @@ type HTTPConfig struct {
 	AuthorizeEmergency func(context.Context, api.Actor, string, string) error
 }
 type OperatorEventDTO struct {
-	Version      uint64    `json:"version"`
-	Kind         string    `json:"kind"`
-	ActorID      string    `json:"actor_id"`
-	Reason       string    `json:"reason"`
-	From         State     `json:"from"`
-	To           State     `json:"to"`
-	CategoryFrom string    `json:"category_from,omitempty"`
-	CategoryTo   string    `json:"category_to,omitempty"`
-	OccurredAt   time.Time `json:"occurred_at"`
-	RecordedAt   time.Time `json:"recorded_at"`
+	Version         uint64          `json:"version"`
+	Kind            string          `json:"kind"`
+	ActorID         string          `json:"actor_id"`
+	Reason          string          `json:"reason"`
+	From            State           `json:"from"`
+	To              State           `json:"to"`
+	CategoryFrom    string          `json:"category_from,omitempty"`
+	CategoryTo      string          `json:"category_to,omitempty"`
+	CategoryBinding CategoryBinding `json:"category_binding,omitempty"`
+	OccurredAt      time.Time       `json:"occurred_at"`
+	RecordedAt      time.Time       `json:"recorded_at"`
 }
 type OperatorDTO struct {
-	Events       []OperatorEventDTO `json:"events"`
-	Participants []ParticipantDTO   `json:"participants"`
-	ID           string             `json:"id"`
-	UnitID       string             `json:"unit_id"`
-	State        State              `json:"state"`
-	Version      uint64             `json:"version"`
-	Narrative    string             `json:"narrative"`
-	Category     string             `json:"category"`
-	Snapshot     Classification     `json:"snapshot"`
-	Assignments  []AssignmentDTO    `json:"assignments"`
+	Events          []OperatorEventDTO `json:"events"`
+	Participants    []ParticipantDTO   `json:"participants"`
+	ID              string             `json:"id"`
+	UnitID          string             `json:"unit_id"`
+	State           State              `json:"state"`
+	Version         uint64             `json:"version"`
+	Narrative       string             `json:"narrative"`
+	Category        string             `json:"category"`
+	CategoryBinding CategoryBinding    `json:"category_binding"`
+	Snapshot        Classification     `json:"snapshot"`
+	Assignments     []AssignmentDTO    `json:"assignments"`
 }
 type ParticipantDTO struct {
 	ID   string          `json:"id"`
@@ -70,9 +75,9 @@ type AssignmentDTO struct {
 }
 
 func operatorView(c Case) OperatorDTO {
-	v := OperatorDTO{ID: c.ID, UnitID: c.UnitID, State: c.State, Version: c.Version, Narrative: c.Narrative, Category: c.Category, Snapshot: c.Snapshot, Assignments: []AssignmentDTO{}}
+	v := OperatorDTO{ID: c.ID, UnitID: c.UnitID, State: c.State, Version: c.Version, Narrative: c.Narrative, Category: c.Category, CategoryBinding: c.CategoryBinding, Snapshot: c.Snapshot, Assignments: []AssignmentDTO{}}
 	for _, event := range c.Events {
-		v.Events = append(v.Events, OperatorEventDTO{Version: event.Version, Kind: event.Kind, ActorID: event.ActorID, Reason: event.Reason, From: event.From, To: event.To, CategoryFrom: event.CategoryFrom, CategoryTo: event.CategoryTo, OccurredAt: event.OccurredAt, RecordedAt: event.RecordedAt})
+		v.Events = append(v.Events, OperatorEventDTO{Version: event.Version, Kind: event.Kind, ActorID: event.ActorID, Reason: event.Reason, From: event.From, To: event.To, CategoryFrom: event.CategoryFrom, CategoryTo: event.CategoryTo, CategoryBinding: event.CategoryBinding, OccurredAt: event.OccurredAt, RecordedAt: event.RecordedAt})
 	}
 	for _, link := range c.Participants {
 		v.Participants = append(v.Participants, ParticipantDTO{ID: link.ID, Role: link.Role})
@@ -238,6 +243,7 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 			OccurredAt      time.Time       `json:"occurred_at"`
 			Narrative       string          `json:"narrative"`
 			Category        string          `json:"category"`
+			CategoryBinding CategoryBinding `json:"category_binding"`
 			BackupIDs       []string        `json:"backup_ids"`
 			CandidateID     string          `json:"candidate_id"`
 			ParticipantRole ParticipantRole `json:"participant_role"`
@@ -265,7 +271,20 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 		case "draft":
 			c, e = s.SaveDraft(r.Context(), p, parts[0], in.ExpectedVersion, in.Narrative, in.OccurredAt)
 		case "category":
-			c, e = s.CorrectCategory(r.Context(), p, parts[0], in.ExpectedVersion, in.Category, in.Reason, in.OccurredAt)
+			if cfg.ValidateCategoryTx != nil {
+				fence := repo.BeforeMutationTx
+				repo.BeforeMutationTx = func(ctx context.Context, tx *sql.Tx) error {
+					if fence != nil {
+						if err := fence(ctx, tx); err != nil {
+							return err
+						}
+					}
+					return cfg.ValidateCategoryTx(ctx, tx, a, in.Category, in.CategoryBinding)
+				}
+				c, e = s.correctCategory(r.Context(), p, parts[0], in.ExpectedVersion, in.Category, in.Reason, in.OccurredAt, in.CategoryBinding)
+			} else {
+				c, e = s.CorrectCategory(r.Context(), p, parts[0], in.ExpectedVersion, in.Category, in.Reason, in.OccurredAt)
+			}
 		case "assignment", "participants":
 			// Load and authorize before resolving any candidate or revealing case unit.
 			c, e = s.Read(r.Context(), p, parts[0])
