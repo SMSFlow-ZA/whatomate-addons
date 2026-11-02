@@ -15,6 +15,13 @@ import (
 
 const MaxUploadBytes = 20 << 20
 
+// ErrProcessingAuthorizationRevoked is returned only by a trusted authorizer
+// after it has positively established that the uploader's access was revoked.
+// A transient lookup failure must return its original error instead. Claim then
+// quarantines only this queued job, without scan evidence, so later authorized
+// jobs can progress. Generic ErrDenied retains its existing nonmutating meaning.
+var ErrProcessingAuthorizationRevoked = errors.New("processing uploader authorization revoked")
+
 type UploadMetadata struct {
 	DocumentID string    `json:"document_id"`
 	Version    string    `json:"version"`
@@ -145,6 +152,14 @@ func (q *ProcessingQueue) Claim(ctx context.Context, worker string, lease time.D
 		return ProcessingJob{}, ErrDenied
 	}
 	if e = q.check(ctx, tx, j); e != nil {
+		if errors.Is(e, ErrProcessingAuthorizationRevoked) {
+			if _, err := tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='failed',failure='authorization_revoked',version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND tenant=$2 AND status='queued'`, j.ID, j.TenantID); err != nil {
+				return ProcessingJob{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return ProcessingJob{}, err
+			}
+		}
 		return ProcessingJob{}, e
 	}
 	j.LeaseToken = randomID()

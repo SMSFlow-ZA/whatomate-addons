@@ -71,3 +71,48 @@ func TestAuthorizedQueueCannotFallBackWithoutAuthorizer(t *testing.T) {
 		}
 	}
 }
+
+func TestRevokedUploaderQuarantinesOnlyExactJobAndUnblocksNext(t *testing.T) {
+	db, _ := knowledgeHTTPFixture(t)
+	ctx := context.Background()
+	if err := MigrateHTTP(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	metadata := UploadMetadata{DocumentID: "synthetic", Version: "1", Filename: "fixture.pdf", Audiences: []string{"staff"}, Effective: time.Now().UTC()}
+	queue := NewProcessingQueue(db)
+	first, err := queue.enqueue(ctx, "owner", "revoked", []byte("%PDF-synthetic"), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := queue.enqueue(ctx, "owner", "active", []byte("%PDF-synthetic"), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transient := errors.New("temporary authorization store outage")
+	q := NewAuthorizedProcessingQueue(db, "owner", func(context.Context, *sql.Tx, ProcessingJob) error { return transient })
+	if _, err = q.Claim(ctx, "worker", time.Minute); !errors.Is(err, transient) {
+		t.Fatal(err)
+	}
+	var state string
+	if err = db.QueryRow(`SELECT status FROM addon_knowledge_jobs WHERE id=$1`, first).Scan(&state); err != nil || state != "queued" {
+		t.Fatalf("transient changed job: %s %v", state, err)
+	}
+	q = NewAuthorizedProcessingQueue(db, "owner", func(_ context.Context, _ *sql.Tx, j ProcessingJob) error {
+		if j.ActorID == "revoked" {
+			return ErrProcessingAuthorizationRevoked
+		}
+		return nil
+	})
+	if _, err = q.Claim(ctx, "worker", time.Minute); !errors.Is(err, ErrProcessingAuthorizationRevoked) {
+		t.Fatalf("revocation: %v", err)
+	}
+	var reason string
+	var clean bool
+	if err = db.QueryRow(`SELECT status,failure,evidence IS NOT NULL FROM addon_knowledge_jobs WHERE id=$1`, first).Scan(&state, &reason, &clean); err != nil || state != "failed" || reason != "authorization_revoked" || clean {
+		t.Fatalf("invalid quarantine %s %s %v %v", state, reason, clean, err)
+	}
+	claimed, err := q.Claim(ctx, "worker", time.Minute)
+	if err != nil || claimed.ID != next {
+		t.Fatalf("next authorized job blocked: %s %v", claimed.ID, err)
+	}
+}
