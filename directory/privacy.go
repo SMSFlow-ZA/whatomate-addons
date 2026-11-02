@@ -9,10 +9,14 @@ import (
 	"github.com/SMSFlow-ZA/whatomate-addons/governance"
 )
 
-type PrivacyAdapter struct{}
+type PrivacyAdapter struct {
+	// AuthorizeSubjectUnit optionally resolves authoritative host scope without
+	// interpreting reporting Zone as authorization. Nil retains legacy semantics.
+	AuthorizeSubjectUnit func(context.Context, *sql.Tx, api.Actor, string, string) error
+}
 
 func (PrivacyAdapter) Name() string { return "directory" }
-func privacySnapshot(ctx context.Context, tx *sql.Tx, a api.Actor, unit, subject string) (Snapshot, error) {
+func (p PrivacyAdapter) privacySnapshot(ctx context.Context, tx *sql.Tx, a api.Actor, unit, subject string) (Snapshot, error) {
 	var raw []byte
 	var s Snapshot
 	e := tx.QueryRowContext(ctx, `SELECT payload FROM directory_snapshots WHERE tenant=$1 FOR UPDATE`, a.OrganizationID).Scan(&raw)
@@ -26,18 +30,25 @@ func privacySnapshot(ctx context.Context, tx *sql.Tx, a api.Actor, unit, subject
 		return s, e
 	}
 	emp, exists := s.Employees[subject]
-	if !a.Allows("directory:privacy", unit) || !a.Has("directory:read") || exists && emp.Zone != unit {
+	if !a.Allows("directory:privacy", unit) || !a.Has("directory:read") {
+		return Snapshot{}, governance.ErrDenied
+	}
+	if p.AuthorizeSubjectUnit != nil {
+		if e = p.AuthorizeSubjectUnit(ctx, tx, a, unit, subject); e != nil {
+			return Snapshot{}, e
+		}
+	} else if exists && emp.Zone != unit {
 		return Snapshot{}, governance.ErrDenied
 	}
 	return s, nil
 }
-func (PrivacyAdapter) Discover(ctx context.Context, tx *sql.Tx, a api.Actor, s governance.Scope, subject string) ([]governance.Record, error) {
+func (p PrivacyAdapter) Discover(ctx context.Context, tx *sql.Tx, a api.Actor, s governance.Scope, subject string) ([]governance.Record, error) {
 	if !a.Allows("directory:privacy", s.UnitID) {
 		return nil, nil
 	}
 	out := []governance.Record{}
 	for _, subjectID := range governance.SubjectIDs(ctx, subject) {
-		snap, e := privacySnapshot(ctx, tx, a, s.UnitID, subjectID)
+		snap, e := p.privacySnapshot(ctx, tx, a, s.UnitID, subjectID)
 		if e != nil {
 			return nil, e
 		}
@@ -49,8 +60,8 @@ func (PrivacyAdapter) Discover(ctx context.Context, tx *sql.Tx, a api.Actor, s g
 	}
 	return out, nil
 }
-func (PrivacyAdapter) Export(ctx context.Context, tx *sql.Tx, a api.Actor, r governance.Record) (json.RawMessage, error) {
-	s, e := privacySnapshot(ctx, tx, a, r.Scope.UnitID, r.Reference)
+func (p PrivacyAdapter) Export(ctx context.Context, tx *sql.Tx, a api.Actor, r governance.Record) (json.RawMessage, error) {
+	s, e := p.privacySnapshot(ctx, tx, a, r.Scope.UnitID, r.Reference)
 	if e != nil {
 		return nil, e
 	}
@@ -61,8 +72,8 @@ func (PrivacyAdapter) Export(ctx context.Context, tx *sql.Tx, a api.Actor, r gov
 		Revoked  bool     `json:"revoked"`
 	}{exists, emp, s.Revoked[r.Reference]})
 }
-func (PrivacyAdapter) Erase(ctx context.Context, tx *sql.Tx, a api.Actor, r governance.Record) error {
-	s, e := privacySnapshot(ctx, tx, a, r.Scope.UnitID, r.Reference)
+func (p PrivacyAdapter) Erase(ctx context.Context, tx *sql.Tx, a api.Actor, r governance.Record) error {
+	s, e := p.privacySnapshot(ctx, tx, a, r.Scope.UnitID, r.Reference)
 	if e != nil {
 		return e
 	}
