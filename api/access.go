@@ -34,7 +34,24 @@ func (s AccessStore) Load(ctx context.Context, a Actor) (Actor, error) {
 	if s.DB == nil || a.OrganizationID == "" || a.UserID == "" {
 		return Actor{}, ErrDenied
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT permission,unit_id,audience FROM addon_api_grants WHERE organization_id=$1 AND user_id=$2 ORDER BY permission,unit_id,audience`, a.OrganizationID, a.UserID)
+	return loadAccess(ctx, s.DB, a)
+}
+
+// LoadTx resolves exact scopes and historical aliases inside a host-fenced
+// transaction. It grants no authentication and never acquires a second connection.
+func (s AccessStore) LoadTx(ctx context.Context, tx *sql.Tx, a Actor) (Actor, error) {
+	if tx == nil || a.OrganizationID == "" || a.UserID == "" {
+		return Actor{}, ErrDenied
+	}
+	return loadAccess(ctx, tx, a)
+}
+
+type accessReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func loadAccess(ctx context.Context, q accessReader, a Actor) (Actor, error) {
+	rows, e := q.QueryContext(ctx, `SELECT permission,unit_id,audience FROM addon_api_grants WHERE organization_id=$1 AND user_id=$2 ORDER BY permission,unit_id,audience`, a.OrganizationID, a.UserID)
 	if e != nil {
 		return Actor{}, e
 	}
@@ -56,7 +73,7 @@ func (s AccessStore) Load(ctx context.Context, a Actor) (Actor, error) {
 	if e = rows.Close(); e != nil {
 		return Actor{}, e
 	}
-	links, e := s.DB.QueryContext(ctx, `SELECT employee_id FROM addon_api_identity_links WHERE organization_id=$1 AND user_id=$2 ORDER BY employee_id`, a.OrganizationID, a.UserID)
+	links, e := q.QueryContext(ctx, `SELECT employee_id FROM addon_api_identity_links WHERE organization_id=$1 AND user_id=$2 ORDER BY employee_id`, a.OrganizationID, a.UserID)
 	if e != nil {
 		return Actor{}, e
 	}

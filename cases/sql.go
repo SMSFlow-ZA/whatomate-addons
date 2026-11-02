@@ -13,7 +13,8 @@ import (
 // its connection/driver and must run Migrate explicitly before enabling cases.
 // Repository transactions are internal trusted boundaries, not API handlers.
 type SQLRepository struct {
-	DB *sql.DB
+	DB               *sql.DB
+	BeforeMutationTx func(context.Context, *sql.Tx) error
 	// AuthorizeIntake is an optional trusted host ingress gate. It executes in
 	// the write transaction before source locks, idempotent replay or inserts.
 	AuthorizeIntake func(context.Context, *sql.Tx, string, string, Case) error
@@ -57,6 +58,12 @@ func (r *SQLRepository) Begin(ctx context.Context) (Transaction, error) {
 	tx, e := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
 		return nil, e
+	}
+	if r.BeforeMutationTx != nil {
+		if e = r.BeforeMutationTx(ctx, tx); e != nil {
+			tx.Rollback()
+			return nil, e
+		}
 	}
 	return &sqlTransaction{tx: tx, authorizeIntake: r.AuthorizeIntake}, nil
 }

@@ -22,3 +22,19 @@ Do not fall back to allowing writes on lookup failures.
 The callback is optional for backwards-compatible standalone composition.
 Hosts that enable physical erasure must explicitly install their policy. This
 module does not claim cross-domain erasure protection when the hook is absent.
+
+`HTTPConfig.BeforeMutationTx(ctx,*sql.Tx,api.Actor) error` installs a current
+authority fence on repository transactions and list/fact disclosures. It runs
+before source locks; direct trusted users can set the matching
+`SQLRepository.BeforeMutationTx(ctx,*sql.Tx) error`. The host must compare the
+original trusted actor's exact permissions, grants and historical aliases with
+current authority, and hold revocation locks until commit/rollback. A captured
+HTTP Principal is not refreshed by this source module. A changed actor must be
+denied rather than silently retaining the original Principal's broader access.
+
+Use one lock order across host paths: privacy barrier, access-version barrier,
+session/membership/factor, entitlement/directory, then source. `api.AccessStore`
+offers `LoadTx` to read scopes/aliases on that same connection. Do not invoke a
+second transaction that reacquires a barrier already held by its caller. Trusted
+workers may instead carry explicitly validated durable delegation; this hook
+does not invent an HTTP session or MFA proof for them.

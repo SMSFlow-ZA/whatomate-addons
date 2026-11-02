@@ -13,6 +13,9 @@ import (
 
 type HTTPConfig struct {
 	Enabled bool
+	// BeforeMutationTx validates the original trusted actor in each repository
+	// transaction before source reads/locks. Hold host authority until commit.
+	BeforeMutationTx func(context.Context, *sql.Tx, api.Actor) error
 	// AuthorizeIngress executes in the intake SQL transaction before source
 	// locks, retries and writes. It may enforce host-owned erasure tombstones.
 	AuthorizeIngress func(context.Context, *sql.Tx, api.Actor, string) error
@@ -108,6 +111,9 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 		}
 		p := PrincipalForActor(a)
 		repo := &SQLRepository{DB: db}
+		if cfg.BeforeMutationTx != nil {
+			repo.BeforeMutationTx = func(ctx context.Context, tx *sql.Tx) error { return cfg.BeforeMutationTx(ctx, tx, a) }
+		}
 		if cfg.AuthorizeIngress != nil {
 			repo.AuthorizeIntake = func(ctx context.Context, tx *sql.Tx, org, key string, c Case) error {
 				if org != a.OrganizationID || c.ContactID != a.UserID {
@@ -120,6 +126,20 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 		path := strings.TrimPrefix(r.URL.Path, "/api/extensions/cases")
 		path = strings.Trim(path, "/")
 		parts := strings.Split(path, "/")
+		// List/fact queries do not use Repository.Begin. Keep the same host
+		// authority fence across these disclosures without nested writer fences.
+		if r.Method == http.MethodGet && (path == "" || path == "facts") && cfg.BeforeMutationTx != nil {
+			tx, err := db.BeginTx(r.Context(), nil)
+			if err != nil {
+				caseError(w, err)
+				return
+			}
+			defer tx.Rollback()
+			if err = cfg.BeforeMutationTx(r.Context(), tx, a); err != nil {
+				caseError(w, err)
+				return
+			}
+		}
 		if path == "" {
 			if r.Method == http.MethodGet {
 				list, e := ListCurrent(r.Context(), db, a, r.URL.Query().Get("q"))
