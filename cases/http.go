@@ -16,6 +16,12 @@ type HTTPConfig struct {
 	// BeforeMutationTx validates the original trusted actor in each repository
 	// transaction before source reads/locks. Hold host authority until commit.
 	BeforeMutationTx func(context.Context, *sql.Tx, api.Actor) error
+	// BeforeAssignmentTx runs before the operator fence and must lock operator
+	// and candidate access barriers in stable order before validating candidates.
+	BeforeAssignmentTx func(context.Context, *sql.Tx, api.Actor, []Principal) error
+	// ResolveIntakeUnit explicitly decouples intake access units from reporting
+	// geography. Without this hook, legacy Zone==requested unit behavior remains.
+	ResolveIntakeUnit func(context.Context, api.Actor, string, Classification) (string, error)
 	// AuthorizeIngress executes in the intake SQL transaction before source
 	// locks, retries and writes. It may enforce host-owned erasure tombstones.
 	AuthorizeIngress func(context.Context, *sql.Tx, api.Actor, string) error
@@ -178,11 +184,15 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 				return
 			}
 			snapshot, err := cfg.ResolveIntake(r.Context(), a)
-			if err != nil || snapshot.Zone != in.UnitID || snapshot.Department == "" || snapshot.CaseType == "" {
+			unit := snapshot.Zone
+			if err == nil && cfg.ResolveIntakeUnit != nil {
+				unit, err = cfg.ResolveIntakeUnit(r.Context(), a, in.UnitID, snapshot)
+			}
+			if err != nil || unit != in.UnitID || snapshot.Department == "" || snapshot.CaseType == "" {
 				api.Error(w, 403, "denied")
 				return
 			}
-			result, e := s.Intake(r.Context(), IntakeRequest{OrganizationID: a.OrganizationID, UnitID: snapshot.Zone, ContactID: a.UserID, Key: in.Key, Narrative: in.Narrative, Snapshot: snapshot, Draft: in.Draft})
+			result, e := s.Intake(r.Context(), IntakeRequest{OrganizationID: a.OrganizationID, UnitID: unit, ContactID: a.UserID, Key: in.Key, Narrative: in.Narrative, Snapshot: snapshot, Draft: in.Draft})
 			if e != nil {
 				caseError(w, e)
 				return
@@ -285,6 +295,22 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 					return
 				}
 				candidates = append(candidates, Candidate{Principal: backup, Role: in.Role, Backup: true})
+			}
+			if cfg.BeforeAssignmentTx != nil {
+				principals := make([]Principal, len(candidates))
+				for i, c := range candidates {
+					principals[i] = c.Principal
+				}
+				operatorFence := repo.BeforeMutationTx
+				repo.BeforeMutationTx = func(ctx context.Context, tx *sql.Tx) error {
+					if err := cfg.BeforeAssignmentTx(ctx, tx, a, principals); err != nil {
+						return err
+					}
+					if operatorFence != nil {
+						return operatorFence(ctx, tx)
+					}
+					return nil
+				}
 			}
 			if parts[1] == "participants" {
 				c, e = s.LinkParticipant(r.Context(), p, parts[0], in.ExpectedVersion, candidate, in.ParticipantRole, in.Reason, in.OccurredAt)

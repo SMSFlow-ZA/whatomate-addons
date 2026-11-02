@@ -38,3 +38,16 @@ offers `LoadTx` to read scopes/aliases on that same connection. Do not invoke a
 second transaction that reacquires a barrier already held by its caller. Trusted
 workers may instead carry explicitly validated durable delegation; this hook
 does not invent an HTTP session or MFA proof for them.
+
+`BeforeAssignmentTx(ctx,tx,operator,candidates)` fences candidate identity and
+exact grants for reassignment and participant linking. It executes before the
+operator fence, so the host can acquire all operator/candidate access barriers
+in sorted, deduplicated order before taking membership locks. ResolveCandidate
+alone is a preview and cannot authorize a later write from a stale snapshot.
+
+`ResolveIntakeUnit(ctx,actor,requestedUnit,classification)` is an optional trusted
+host mapping port. Without it, the legacy exact `classification.Zone == unit`
+rule remains. Hosts with explicit owner-appointed case units may validate the
+requested exact SubmitOwn unit independently, retaining the original geographic
+Zone and Department as reporting facts. This callback never grants SubmitOwn;
+the HTTP and transaction authority boundaries must still require that grant.
