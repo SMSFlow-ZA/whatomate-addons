@@ -12,7 +12,12 @@ import (
 // SQLRepository persists only addon_cases_* tables in PostgreSQL. The host owns
 // its connection/driver and must run Migrate explicitly before enabling cases.
 // Repository transactions are internal trusted boundaries, not API handlers.
-type SQLRepository struct{ DB *sql.DB }
+type SQLRepository struct {
+	DB *sql.DB
+	// AuthorizeIntake is an optional trusted host ingress gate. It executes in
+	// the write transaction before source locks, idempotent replay or inserts.
+	AuthorizeIntake func(context.Context, *sql.Tx, string, string, Case) error
+}
 
 // Migrate installs version 1 storage atomically. Deployments must restrict schema
 // changes to a migration identity; normal application identities need only DML.
@@ -53,18 +58,24 @@ func (r *SQLRepository) Begin(ctx context.Context) (Transaction, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &sqlTransaction{tx: tx}, nil
+	return &sqlTransaction{tx: tx, authorizeIntake: r.AuthorizeIntake}, nil
 }
 
 type sqlTransaction struct {
-	tx      *sql.Tx
-	done    bool
-	outcome CommitOutcome
+	tx              *sql.Tx
+	done            bool
+	outcome         CommitOutcome
+	authorizeIntake func(context.Context, *sql.Tx, string, string, Case) error
 }
 
 func (t *sqlTransaction) Intake(ctx context.Context, org, key, fp string, c Case, m OutboxMessage) (string, error) {
 	if t.done {
 		return "", ErrInvalid
+	}
+	if t.authorizeIntake != nil {
+		if e := t.authorizeIntake(ctx, t.tx, org, key, c); e != nil {
+			return "", e
+		}
 	}
 	// Lock a hash of the structured key. Collisions only serialize independent
 	// keys; the full database primary key remains the authoritative identity.

@@ -13,6 +13,9 @@ import (
 
 type HTTPConfig struct {
 	Enabled bool
+	// AuthorizeIngress executes in the intake SQL transaction before source
+	// locks, retries and writes. It may enforce host-owned erasure tombstones.
+	AuthorizeIngress func(context.Context, *sql.Tx, api.Actor, string) error
 	// ResolveIntake derives immutable reporting facts from the current approved
 	// directory. Browser snapshot fields are never authoritative.
 	ResolveIntake func(context.Context, api.Actor) (Classification, error)
@@ -93,7 +96,6 @@ func caseError(w http.ResponseWriter, e error) {
 
 // NewHTTPHandler does no DDL. The composition root must explicitly migrate first.
 func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
-	s := Service{Repository: &SQLRepository{DB: db}}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !cfg.Enabled {
 			api.Error(w, 403, "unavailable")
@@ -105,6 +107,16 @@ func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler {
 			return
 		}
 		p := PrincipalForActor(a)
+		repo := &SQLRepository{DB: db}
+		if cfg.AuthorizeIngress != nil {
+			repo.AuthorizeIntake = func(ctx context.Context, tx *sql.Tx, org, key string, c Case) error {
+				if org != a.OrganizationID || c.ContactID != a.UserID {
+					return ErrDenied
+				}
+				return cfg.AuthorizeIngress(ctx, tx, a, key)
+			}
+		}
+		s := Service{Repository: repo}
 		path := strings.TrimPrefix(r.URL.Path, "/api/extensions/cases")
 		path = strings.Trim(path, "/")
 		parts := strings.Split(path, "/")
