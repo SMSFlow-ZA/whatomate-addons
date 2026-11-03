@@ -47,7 +47,19 @@ func (s PhysicalService) Correct(ctx context.Context, a api.Actor, scope Scope, 
 		if !ok {
 			return ErrInvalid
 		}
-		if e = adapter.Correct(ctx, t.tx, a, record, patch); e != nil {
+		if s.CorrectionCustody != nil {
+			recovery, ok := s.adapter(record).(CorrectionRecoveryAdapter)
+			if !ok || !req.Approved || req.ApprovedBy == "" {
+				return ErrApproval
+			}
+			checkpoint, err := recovery.CorrectWithRecoveryTx(ctx, t.tx, a, record, patch)
+			if err != nil {
+				return err
+			}
+			if err = s.CorrectionCustody(ctx, t.tx, a, req, record, patch, checkpoint); err != nil {
+				return err
+			}
+		} else if e = adapter.Correct(ctx, t.tx, a, record, patch); e != nil {
 			return e
 		}
 		if e = put(ctx, t, "correction_receipt", requestID, map[string]any{"record_id": recordID, "corrected_at": time.Now().UTC(), "actor_id": a.UserID}); e != nil {

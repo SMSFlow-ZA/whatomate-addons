@@ -21,6 +21,9 @@ type PhysicalAdapter interface {
 	Erase(context.Context, *sql.Tx, api.Actor, Record) error
 }
 type PhysicalService struct {
+	// CorrectionCustody is mandatory when this host promises correction recovery.
+	// It must independently bind current approval and atomically seal the payload.
+	CorrectionCustody      func(context.Context, *sql.Tx, api.Actor, SubjectRequest, Record, json.RawMessage, json.RawMessage) error
 	DelegatedWorkerErasure DelegatedWorkerController
 	DB                     *sql.DB
 	Adapters               []PhysicalAdapter
