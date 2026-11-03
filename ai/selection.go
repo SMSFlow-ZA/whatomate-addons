@@ -22,10 +22,17 @@ var sentenceEnd = regexp.MustCompile(`[.!?](?:[ \r\n]+|$)`)
 var fieldLine = regexp.MustCompile(`(?m)^[A-Za-z][A-Za-z /_-]{1,80}:[ \t]*[^\r\n]+$`)
 
 func evidenceSpans(sources []knowledge.Source) []evidenceSpan {
+	passages := make([]EvidencePassage, 0, len(sources))
+	for _, s := range sources {
+		passages = append(passages, EvidencePassage{s.Reference, pageContext(s), s.Page.Text})
+	}
+	return passageSpans(passages)
+}
+func passageSpans(sources []EvidencePassage) []evidenceSpan {
 	spans := []evidenceSpan{}
 	total := 0
 	for source, s := range sources {
-		for _, block := range paragraphBreak.Split(s.Page.Text, -1) {
+		for _, block := range paragraphBreak.Split(s.Text, -1) {
 			block = strings.TrimSpace(block)
 			pieces := []string{block}
 			if len(block) > maxEvidenceBytes {
@@ -50,7 +57,7 @@ func evidenceSpans(sources []knowledge.Source) []evidenceSpan {
 				if len(spans) >= 64 || total+len(text) > 24000 {
 					return spans
 				}
-				spans = append(spans, evidenceSpan{Index: len(spans), Document: s.DocumentID, Context: pageContext(s), Text: text, source: source})
+				spans = append(spans, evidenceSpan{Index: len(spans), Document: s.Reference, Context: s.Title, Text: text, source: source})
 				total += len(text)
 			}
 		}

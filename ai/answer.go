@@ -11,7 +11,10 @@ import (
 
 const FixedResponse = "I cannot provide an answer from approved current sources. Please contact a human reviewer."
 
+// EvidencePassage represents approved non-PDF text without invented page provenance.
+type EvidencePassage struct{ Reference, Title, Text string }
 type Request struct {
+	Evidence []EvidencePassage
 	Question string
 	Sources  []knowledge.Source
 }

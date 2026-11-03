@@ -90,13 +90,14 @@ func (p *DevelopmentProvider) verify(ctx context.Context) error {
 var completionSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["supporting_words","intent","evidence_index"],"properties":{"supporting_words":{"type":"string","maxLength":400},"intent":{"type":"string","enum":["answerable","unsupported_action","unrelated_or_missing"]},"evidence_index":{"type":"integer","minimum":-1,"maximum":63}}}`)
 
 func (p *DevelopmentProvider) Generate(ctx context.Context, r Request) (Completion, error) {
-	if strings.TrimSpace(r.Question) == "" || len(r.Question) > 4096 || len(r.Sources) == 0 || len(r.Sources) > 20 {
+	if strings.TrimSpace(r.Question) == "" || len(r.Question) > 4096 || len(r.Sources)+len(r.Evidence) == 0 || len(r.Sources)+len(r.Evidence) > 20 {
 		return Completion{}, ErrProvider
 	}
 	if unsupportedAuthorityRequest(r.Question) {
 		return Completion{}, nil
 	}
-	spans := evidenceSpans(r.Sources)
+	passages := requestPassages(r)
+	spans := passageSpans(passages)
 	if len(spans) == 0 {
 		return Completion{}, nil
 	}
@@ -167,7 +168,7 @@ func (p *DevelopmentProvider) selectEvidence(ctx context.Context, r Request, spa
 					return Completion{}, e
 				}
 				if relevant {
-					return Completion{Answer: span.Text, Citations: []string{r.Sources[span.source].Reference}, Grounded: true}, nil
+					return Completion{Answer: span.Text, Citations: []string{requestPassages(r)[span.source].Reference}, Grounded: true}, nil
 				}
 			}
 		}
@@ -177,7 +178,7 @@ func (p *DevelopmentProvider) selectEvidence(ctx context.Context, r Request, spa
 		return Completion{}, ErrProvider
 	}
 	span := spans[selected.Index]
-	if span.Text == "" || len(span.Text) > maxEvidenceBytes || !strings.Contains(r.Sources[span.source].Page.Text, span.Text) {
+	if span.Text == "" || len(span.Text) > maxEvidenceBytes || !strings.Contains(requestPassages(r)[span.source].Text, span.Text) {
 		return Completion{}, ErrProvider
 	}
 	if len(strings.Fields(selected.Words)) < 3 || len(selected.Words) > 400 || sourceQuote(strings.ToLower(span.Text), strings.ToLower(selected.Words)) == "" {
@@ -192,7 +193,7 @@ func (p *DevelopmentProvider) selectEvidence(ctx context.Context, r Request, spa
 		remaining = append(remaining, spans[selected.Index+1:]...)
 		return p.selectEvidence(ctx, r, remaining, attempts-1)
 	}
-	return Completion{Answer: span.Text, Citations: []string{r.Sources[span.source].Reference}, Grounded: true}, nil
+	return Completion{Answer: span.Text, Citations: []string{requestPassages(r)[span.source].Reference}, Grounded: true}, nil
 }
 
 // Embed uses a separately pinned model, bounded text and finite vectors. No model pulls.
@@ -247,4 +248,12 @@ func sourceQuote(source, quote string) string {
 		return ""
 	}
 	return re.FindString(source)
+}
+
+func requestPassages(r Request) []EvidencePassage {
+	out := make([]EvidencePassage, 0, len(r.Sources)+len(r.Evidence))
+	for _, s := range r.Sources {
+		out = append(out, EvidencePassage{s.Reference, pageContext(s), s.Page.Text})
+	}
+	return append(out, r.Evidence...)
 }

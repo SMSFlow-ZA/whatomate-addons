@@ -46,11 +46,13 @@ func (m UploadMetadata) Type() string {
 // ProcessingJob is a trusted controller port, never an HTTP input. Claim reads
 // immutable bytes from quarantine. LeaseToken authorizes exactly one completion.
 type ProcessingJob struct {
+	Execution                                                  ExecutionBinding
 	ID, TenantID, ActorID, InputHash, MetadataHash, LeaseToken string
 	Input                                                      []byte
 	Metadata                                                   UploadMetadata
 }
 type ProcessingQueue struct {
+	execution  ExecutionFence
 	db         *sql.DB
 	tenant     string
 	authorize  func(context.Context, *sql.Tx, ProcessingJob) error
@@ -99,6 +101,7 @@ func MigrateHTTP(ctx context.Context, db *sql.DB) error {
  failure text,created_at timestamptz NOT NULL DEFAULT clock_timestamp(),updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  CHECK(status IN ('queued','processing','processed','approved','published','failed','unknown','retired')));
  ALTER TABLE addon_knowledge_jobs ADD COLUMN IF NOT EXISTS receipt jsonb;
+ ALTER TABLE addon_knowledge_jobs ADD COLUMN IF NOT EXISTS execution_binding jsonb NOT NULL DEFAULT '{}';
  CREATE INDEX IF NOT EXISTS addon_knowledge_jobs_pending ON addon_knowledge_jobs(status,created_at);`)
 	return e
 }
@@ -137,7 +140,12 @@ func (q *ProcessingQueue) enqueueGuarded(ctx context.Context, tenant, actor stri
 			return "", e
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `INSERT INTO addon_knowledge_jobs(id,tenant,actor,input,input_hash,metadata,metadata_hash)VALUES($1,$2,$3,$4,$5,$6,$7)`, id, tenant, actor, input, digest(input), b, digest(b)); e != nil {
+	j := ProcessingJob{ID: id, TenantID: tenant, ActorID: actor, Input: input, InputHash: digest(input), Metadata: m, MetadataHash: digest(b)}
+	if e = q.checkExecution(ctx, tx, &j, true); e != nil {
+		return "", e
+	}
+	binding, _ := json.Marshal(j.Execution)
+	if _, e = tx.ExecContext(ctx, `INSERT INTO addon_knowledge_jobs(id,tenant,actor,input,input_hash,metadata,metadata_hash,execution_binding)VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, tenant, actor, input, digest(input), b, digest(b), binding); e != nil {
 		return "", e
 	}
 	return id, tx.Commit()
@@ -149,51 +157,59 @@ func (q *ProcessingQueue) Claim(ctx context.Context, worker string, lease time.D
 	if q.db == nil || worker == "" || lease < time.Second || lease > 15*time.Minute {
 		return ProcessingJob{}, ErrDenied
 	}
-
 	if q.authorized && (strings.TrimSpace(q.tenant) == "" || q.authorize == nil) {
 		return ProcessingJob{}, ErrDenied
+	}
+	// Independent outcome classification only: no retry, cleanup or new execution.
+	// Do not retain job-row locks from this maintenance update while acquiring host fences.
+	if _, e := q.db.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='unknown',version=version+1,failure='lease_expired',updated_at=clock_timestamp() WHERE status='processing' AND lease_until<=clock_timestamp() AND ($1='' OR tenant=$1)`, q.tenant); e != nil {
+		return ProcessingJob{}, e
 	}
 	tx, e := q.db.BeginTx(ctx, nil)
 	if e != nil {
 		return ProcessingJob{}, e
 	}
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='unknown',version=version+1,failure='lease_expired',updated_at=clock_timestamp() WHERE status='processing' AND lease_until<=clock_timestamp() AND ($1='' OR tenant=$1)`, q.tenant); e != nil {
-		return ProcessingJob{}, e
-	}
 	var j ProcessingJob
-	var metadata []byte
-	e = tx.QueryRowContext(ctx, `SELECT id,tenant,actor,input,input_hash,metadata,metadata_hash FROM addon_knowledge_jobs WHERE status='queued' AND ($1='' OR tenant=$1) ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, q.tenant).Scan(&j.ID, &j.TenantID, &j.ActorID, &j.Input, &j.InputHash, &metadata, &j.MetadataHash)
-	if errors.Is(e, sql.ErrNoRows) {
-		if err := tx.Commit(); err != nil {
-			return ProcessingJob{}, err
-		}
-		return ProcessingJob{}, sql.ErrNoRows
-	}
+	var metadata, binding []byte
+	e = tx.QueryRowContext(ctx, `SELECT id,tenant,actor,input,input_hash,metadata,metadata_hash,execution_binding FROM addon_knowledge_jobs WHERE status='queued' AND ($1='' OR tenant=$1) ORDER BY created_at,id LIMIT 1`, q.tenant).Scan(&j.ID, &j.TenantID, &j.ActorID, &j.Input, &j.InputHash, &metadata, &j.MetadataHash, &binding)
 	if e != nil {
 		return ProcessingJob{}, e
 	}
-	if json.Unmarshal(metadata, &j.Metadata) != nil {
+	if json.Unmarshal(metadata, &j.Metadata) != nil || json.Unmarshal(binding, &j.Execution) != nil {
 		return ProcessingJob{}, ErrDenied
 	}
 	canonical, _ := json.Marshal(j.Metadata)
 	if digest(j.Input) != j.InputHash || digest(canonical) != j.MetadataHash {
 		return ProcessingJob{}, ErrDenied
 	}
-	if e = q.check(ctx, tx, j); e != nil {
-		if errors.Is(e, ErrProcessingAuthorizationRevoked) {
-			if _, err := tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='failed',failure='authorization_revoked',version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND tenant=$2 AND status='queued'`, j.ID, j.TenantID); err != nil {
-				return ProcessingJob{}, err
-			}
-			if err := tx.Commit(); err != nil {
-				return ProcessingJob{}, err
-			}
-		}
+	// Identity/privacy first, lifecycle second, source-row lock last.
+	authError := q.check(ctx, tx, j)
+	if e = q.checkExecution(ctx, tx, &j, false); e != nil {
 		return ProcessingJob{}, e
 	}
-	j.LeaseToken = randomID()
-	_, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='processing',worker=$2,lease_token=$3,lease_until=clock_timestamp()+($4 * interval '1 second'),version=version+1,updated_at=clock_timestamp() WHERE id=$1`, j.ID, worker, j.LeaseToken, int(lease.Seconds()))
+	var current []byte
+	e = tx.QueryRowContext(ctx, `SELECT execution_binding FROM addon_knowledge_jobs WHERE id=$1 AND tenant=$2 AND actor=$3 AND status='queued' AND input_hash=$4 AND metadata_hash=$5 FOR UPDATE SKIP LOCKED`, j.ID, j.TenantID, j.ActorID, j.InputHash, j.MetadataHash).Scan(&current)
 	if e != nil {
+		return ProcessingJob{}, e
+	}
+	var bound ExecutionBinding
+	if json.Unmarshal(current, &bound) != nil || bound != j.Execution {
+		return ProcessingJob{}, ErrDenied
+	}
+	if authError != nil {
+		if errors.Is(authError, ErrProcessingAuthorizationRevoked) {
+			if _, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='failed',failure='authorization_revoked',version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND tenant=$2 AND status='queued'`, j.ID, j.TenantID); e != nil {
+				return ProcessingJob{}, e
+			}
+			if e = tx.Commit(); e != nil {
+				return ProcessingJob{}, e
+			}
+		}
+		return ProcessingJob{}, authError
+	}
+	j.LeaseToken = randomID()
+	if _, e = tx.ExecContext(ctx, `UPDATE addon_knowledge_jobs SET status='processing',worker=$2,lease_token=$3,lease_until=clock_timestamp()+($4 * interval '1 second'),version=version+1,updated_at=clock_timestamp() WHERE id=$1`, j.ID, worker, j.LeaseToken, int(lease.Seconds())); e != nil {
 		return ProcessingJob{}, e
 	}
 	if e = tx.Commit(); e != nil {
@@ -201,15 +217,20 @@ func (q *ProcessingQueue) Claim(ctx context.Context, worker string, lease time.D
 	}
 	return j, nil
 }
+
 func (q *ProcessingQueue) lockedJob(ctx context.Context, tx *sql.Tx, j ProcessingJob) (UploadMetadata, []byte, error) {
-	var input, metadata []byte
+	var input, metadata, binding []byte
 	var ih, mh string
-	e := tx.QueryRowContext(ctx, `SELECT input,input_hash,metadata,metadata_hash FROM addon_knowledge_jobs WHERE id=$1 AND tenant=$2 AND actor=$3 AND status='processing' AND lease_token=$4 AND lease_until>clock_timestamp() FOR UPDATE`, j.ID, j.TenantID, j.ActorID, j.LeaseToken).Scan(&input, &ih, &metadata, &mh)
+	e := tx.QueryRowContext(ctx, `SELECT input,input_hash,metadata,metadata_hash,execution_binding FROM addon_knowledge_jobs WHERE id=$1 AND tenant=$2 AND actor=$3 AND status='processing' AND lease_token=$4 AND lease_until>clock_timestamp() FOR UPDATE`, j.ID, j.TenantID, j.ActorID, j.LeaseToken).Scan(&input, &ih, &metadata, &mh, &binding)
 	if errors.Is(e, sql.ErrNoRows) {
 		return UploadMetadata{}, nil, ErrDenied
 	}
 	if e != nil {
 		return UploadMetadata{}, nil, e
+	}
+	var bound ExecutionBinding
+	if json.Unmarshal(binding, &bound) != nil || bound != j.Execution {
+		return UploadMetadata{}, nil, ErrDenied
 	}
 	var m UploadMetadata
 	if json.Unmarshal(metadata, &m) != nil {
@@ -237,11 +258,14 @@ func (q *ProcessingQueue) complete(ctx context.Context, j ProcessingJob, pages [
 		return err
 	}
 	defer tx.Rollback()
-	m, input, err := q.lockedJob(ctx, tx, j)
-	if err != nil {
+	if err = q.check(ctx, tx, j); err != nil {
 		return err
 	}
-	if err = q.check(ctx, tx, j); err != nil {
+	if err = q.checkExecution(ctx, tx, &j, false); err != nil {
+		return err
+	}
+	m, input, err := q.lockedJob(ctx, tx, j)
+	if err != nil {
 		return err
 	}
 	total := 0
@@ -273,6 +297,9 @@ func (q *ProcessingQueue) Fail(ctx context.Context, j ProcessingJob, reason stri
 		return err
 	}
 	defer tx.Rollback()
+	if err = q.checkExecution(ctx, tx, &j, false); err != nil {
+		return err
+	}
 	if _, _, err = q.lockedJob(ctx, tx, j); err != nil {
 		return err
 	}

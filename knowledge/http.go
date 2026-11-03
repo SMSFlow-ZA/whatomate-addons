@@ -14,7 +14,8 @@ import (
 )
 
 type HTTPConfig struct {
-	Enabled bool
+	ExecutionFence ExecutionFence
+	Enabled        bool
 	// Authorize resolves current host roles AND exact audience grants for any
 	// principal, including the original reviewer at publication time.
 	Authorize func(context.Context, string, string, string, string) bool
@@ -155,7 +156,9 @@ func (h *httpHandler) upload(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.AuthorizeIngress != nil {
 		guard = func(ctx context.Context, tx *sql.Tx) error { return h.cfg.AuthorizeIngress(ctx, tx, a, m) }
 	}
-	id, e := NewProcessingQueue(h.db).enqueueGuarded(r.Context(), a.OrganizationID, a.UserID, input, m, guard)
+	queue := NewProcessingQueue(h.db)
+	queue.SetExecutionFence(h.cfg.ExecutionFence)
+	id, e := queue.enqueueGuarded(r.Context(), a.OrganizationID, a.UserID, input, m, guard)
 	if e != nil {
 		if errors.Is(e, ErrDenied) {
 			api.Error(w, 403, "ingress_denied")
