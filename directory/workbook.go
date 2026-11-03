@@ -206,7 +206,17 @@ func column(ref string) (int, error) {
 type Mapping struct{ EmployeeID, Phone, Active, Zone, Department int }
 
 func MapRows(rows [][]string, m Mapping, skipHeader bool) (Preview, error) {
-	required := []int{m.EmployeeID, m.Phone, m.Active}
+	return MapRowsWithOptions(rows, m, skipHeader, PreviewOptions{})
+}
+
+func MapRowsWithOptions(rows [][]string, m Mapping, skipHeader bool, options PreviewOptions) (Preview, error) {
+	required := []int{m.EmployeeID, m.Active}
+	optional := []int{m.Zone, m.Department}
+	if options.AllowPhoneLessEmployees {
+		optional = append(optional, m.Phone)
+	} else {
+		required = append(required, m.Phone)
+	}
 	seen := map[int]bool{}
 	for _, i := range required {
 		if i < 0 || i >= 256 || seen[i] {
@@ -214,7 +224,7 @@ func MapRows(rows [][]string, m Mapping, skipHeader bool) (Preview, error) {
 		}
 		seen[i] = true
 	}
-	for _, i := range []int{m.Zone, m.Department} {
+	for _, i := range optional {
 		if i < -1 || i >= 256 || i >= 0 && seen[i] {
 			return Preview{}, errors.New("invalid optional mapping")
 		}
@@ -252,7 +262,7 @@ func MapRows(rows [][]string, m Mapping, skipHeader bool) (Preview, error) {
 		}
 		out = append(out, Employee{ID: value(m.EmployeeID), Phone: value(m.Phone), Active: active, Zone: value(m.Zone), Department: value(m.Department)})
 	}
-	return NewPreview(out)
+	return NewPreviewWithOptions(out, options)
 }
 
 var ErrLegacyXLSUnsupported = errors.New("legacy binary XLS requires an explicitly configured bounded local worker adapter")

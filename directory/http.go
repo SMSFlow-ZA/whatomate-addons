@@ -16,6 +16,12 @@ import (
 
 // HTTPConfig is trusted host configuration. An invalid clock or freshness denies service.
 type HTTPConfig struct {
+	RejectUnsafeImportText bool
+	ImportDefaultMode      string
+	ImportMaxRows          int
+	ImportMaxFileBytes     int64
+	// AllowPhoneLessEmployees permits native web roster rows without phones; phone matching remains strict.
+	AllowPhoneLessEmployees bool
 	// AuthorizeAccess is an optional trusted host gate. nil tx is a read/preflight;
 	// mutations call it in their transaction before source locks and with every
 	// incoming employee ID. Hosts can fence live authority and erasure tombstones.
@@ -25,23 +31,26 @@ type HTTPConfig struct {
 	Worker          *LegacyWorker
 }
 type employeeDTO struct {
-	ID         string `json:"id"`
-	Phone      string `json:"phone"`
-	Zone       string `json:"zone"`
-	Department string `json:"department"`
-	Active     bool   `json:"active"`
-	Revoked    bool   `json:"revoked,omitempty"`
+	FirstName  *string `json:"first_name,omitempty"`
+	LastName   *string `json:"last_name,omitempty"`
+	ID         string  `json:"id"`
+	Phone      string  `json:"phone"`
+	Zone       string  `json:"zone"`
+	Department string  `json:"department"`
+	Active     bool    `json:"active"`
+	Revoked    bool    `json:"revoked,omitempty"`
 }
 type previewDTO struct {
-	SourceSHA256    string        `json:"source_sha256,omitempty"`
-	PreviewID       string        `json:"preview_id"`
-	Digest          string        `json:"digest"`
-	ExpectedVersion uint64        `json:"expected_version"`
-	Employees       []employeeDTO `json:"employees"`
-	CreatedAt       time.Time     `json:"created_at"`
-	CreatedBy       string        `json:"created_by"`
-	ApprovedAt      *time.Time    `json:"approved_at,omitempty"`
-	ApprovedBy      string        `json:"approved_by,omitempty"`
+	Import          *ImportMetadata `json:"import,omitempty"`
+	SourceSHA256    string          `json:"source_sha256,omitempty"`
+	PreviewID       string          `json:"preview_id"`
+	Digest          string          `json:"digest"`
+	ExpectedVersion uint64          `json:"expected_version"`
+	Employees       []employeeDTO   `json:"employees"`
+	CreatedAt       time.Time       `json:"created_at"`
+	CreatedBy       string          `json:"created_by"`
+	ApprovedAt      *time.Time      `json:"approved_at,omitempty"`
+	ApprovedBy      string          `json:"approved_by,omitempty"`
 }
 type directoryHTTP struct {
 	db  *sql.DB
@@ -64,6 +73,10 @@ func MigrateHTTP(ctx context.Context, db *sql.DB) error {
 		return e
 	}
 	_, e = db.ExecContext(ctx, `ALTER TABLE directory_previews ADD COLUMN IF NOT EXISTS source_sha256 text NOT NULL DEFAULT ''`)
+	if e != nil {
+		return e
+	}
+	_, e = db.ExecContext(ctx, `ALTER TABLE directory_previews ADD COLUMN IF NOT EXISTS import_metadata jsonb`)
 	return e
 }
 func NewHTTPHandler(db *sql.DB, cfg HTTPConfig) http.Handler { return &directoryHTTP{db, cfg} }
@@ -164,8 +177,12 @@ func (h *directoryHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ExpectedVersion *uint64       `json:"expected_version"`
 			Employees       []employeeDTO `json:"employees"`
+			RequestID       string        `json:"request_id"`
+			Rows            []ImportRow   `json:"rows"`
+			Mode            string        `json:"mode"`
+			Selected        *[]int        `json:"selected_rows"`
 		}
-		if api.Decode(r, &in) != nil || in.ExpectedVersion == nil {
+		if h.decodeImport(r, &in) != nil || in.ExpectedVersion == nil {
 			api.Error(w, 400, "invalid_input")
 			return
 		}
@@ -173,20 +190,46 @@ func (h *directoryHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			api.Error(w, 409, "version_conflict")
 			return
 		}
-		rows := make([]Employee, len(in.Employees))
-		for i, d := range in.Employees {
+		if len(in.Rows) > 0 && len(in.Employees) > 0 {
+			api.Error(w, 400, "invalid_input")
+			return
+		}
+		raw := in.Rows
+		for _, d := range in.Employees {
 			if d.Revoked {
 				api.Error(w, 400, "invalid_input")
 				return
 			}
-			rows[i] = Employee{ID: d.ID, Phone: d.Phone, Zone: d.Zone, Department: d.Department, Active: d.Active}
+			active := "false"
+			if d.Active {
+				active = "true"
+			}
+			raw = append(raw, ImportRow{FirstName: d.FirstName, LastName: d.LastName, ID: d.ID, Phone: d.Phone, Zone: d.Zone, Department: d.Department, Active: active})
 		}
-		p, e := NewPreview(rows)
+		p, m, validation, e := h.prepareImport(s, raw, in.Mode, in.Selected, "")
 		if e != nil {
 			api.Error(w, 400, "invalid_roster")
 			return
 		}
-		h.savePreview(w, r, a, p, s.Version, "")
+		if len(validation) > 0 {
+			if h.cfg.ImportDefaultMode == "" && in.Mode == "" && len(in.Rows) == 0 {
+				api.Error(w, 400, "invalid_roster")
+				return
+			}
+			api.Write(w, 200, map[string]any{"validation_only": true, "rows": validation, "expected_version": s.Version})
+			return
+		}
+		if h.cfg.ImportDefaultMode == "" && in.Mode == "" && in.Selected == nil && len(in.Rows) == 0 {
+			m = nil
+		}
+		if m != nil {
+			if !validImportRequestID(in.RequestID) {
+				api.Error(w, 400, "invalid_request_id")
+				return
+			}
+			m.RequestID = in.RequestID
+		}
+		h.savePreview(w, r, a, p, s.Version, "", m)
 
 	case "revoke":
 		var in struct {
@@ -230,7 +273,7 @@ func (h *directoryHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func toDTO(e Employee) employeeDTO {
-	return employeeDTO{ID: e.ID, Phone: e.Phone, Zone: e.Zone, Department: e.Department, Active: e.Active}
+	return employeeDTO{FirstName: optionalName(e.FirstName), LastName: optionalName(e.LastName), ID: e.ID, Phone: e.Phone, Zone: e.Zone, Department: e.Department, Active: e.Active}
 }
 func writeDirectoryError(w http.ResponseWriter, e error) {
 	if errors.Is(e, ErrDenied) || errors.Is(e, api.ErrDenied) {
@@ -243,16 +286,21 @@ func writeDirectoryError(w http.ResponseWriter, e error) {
 }
 func scanPreview(row *sql.Row) (previewDTO, error) {
 	var d previewDTO
-	var payload []byte
+	var payload, metadata []byte
 	var version int64
 	var approvedBy sql.NullString
 	var approvedAt sql.NullTime
-	e := row.Scan(&d.PreviewID, &d.Digest, &version, &payload, &d.CreatedBy, &d.CreatedAt, &approvedBy, &approvedAt, &d.SourceSHA256)
+	e := row.Scan(&d.PreviewID, &d.Digest, &version, &payload, &d.CreatedBy, &d.CreatedAt, &approvedBy, &approvedAt, &d.SourceSHA256, &metadata)
 	if e != nil {
 		return d, e
 	}
 	if version < 0 {
 		return d, errors.New("invalid version")
+	}
+	if len(metadata) > 0 && string(metadata) != "null" {
+		if e = json.Unmarshal(metadata, &d.Import); e != nil {
+			return d, e
+		}
 	}
 	d.ExpectedVersion = uint64(version)
 	if e = json.Unmarshal(payload, &d.Employees); e != nil {
@@ -265,7 +313,7 @@ func scanPreview(row *sql.Row) (previewDTO, error) {
 	return d, nil
 }
 
-const previewSelect = `SELECT id,digest,expected_version,payload,created_by,created_at,approved_by,approved_at,source_sha256 FROM directory_previews WHERE tenant=$1 AND id=$2`
+const previewSelect = `SELECT id,digest,expected_version,payload,created_by,created_at,approved_by,approved_at,source_sha256,import_metadata FROM directory_previews WHERE tenant=$1 AND id=$2`
 
 func (h *directoryHTTP) review(w http.ResponseWriter, r *http.Request, a api.Actor, id string) {
 	d, e := scanPreview(h.db.QueryRowContext(r.Context(), previewSelect, a.OrganizationID, id))
@@ -281,9 +329,10 @@ func (h *directoryHTTP) review(w http.ResponseWriter, r *http.Request, a api.Act
 }
 func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Actor, store *PostgresStore) {
 	var in struct {
-		PreviewID       string  `json:"preview_id"`
-		Digest          string  `json:"digest"`
-		ExpectedVersion *uint64 `json:"expected_version"`
+		AcknowledgeRemovals bool    `json:"acknowledge_removals"`
+		PreviewID           string  `json:"preview_id"`
+		Digest              string  `json:"digest"`
+		ExpectedVersion     *uint64 `json:"expected_version"`
 	}
 	if api.Decode(r, &in) != nil || in.ExpectedVersion == nil || in.PreviewID == "" || in.Digest == "" || *in.ExpectedVersion >= math.MaxInt64 {
 		api.Error(w, 400, "invalid_input")
@@ -314,7 +363,7 @@ func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Ac
 	}
 	rows := make([]Employee, len(d.Employees))
 	for i, em := range d.Employees {
-		rows[i] = Employee{ID: em.ID, Phone: em.Phone, Zone: em.Zone, Department: em.Department, Active: em.Active}
+		rows[i] = Employee{FirstName: nameValue(em.FirstName), LastName: nameValue(em.LastName), ID: em.ID, Phone: em.Phone, Zone: em.Zone, Department: em.Department, Active: em.Active}
 	}
 	ids := make([]string, len(rows))
 	for i, em := range rows {
@@ -324,9 +373,13 @@ func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Ac
 		api.Error(w, 403, "denied")
 		return
 	}
-	p, e := NewPreview(rows)
-	if e != nil || p.Digest() != d.Digest {
+	p, e := NewPreviewWithOptions(rows, PreviewOptions{AllowPhoneLessEmployees: h.cfg.AllowPhoneLessEmployees})
+	if e != nil || importDigest(p, d.Import) != d.Digest || (d.Import != nil && d.Import.BaseVersion != d.ExpectedVersion) {
 		api.Error(w, 503, "unavailable")
+		return
+	}
+	if d.Import != nil && d.Import.Mode == "replace" && d.Import.RemovalCount > 0 && !in.AcknowledgeRemovals {
+		api.Error(w, 400, "removal_acknowledgement_required")
 		return
 	}
 	// Load through the transaction. CAS below prevents any concurrent import/revoke from being overwritten.
@@ -348,7 +401,7 @@ func (h *directoryHTTP) approve(w http.ResponseWriter, r *http.Request, a api.Ac
 		return
 	}
 	now := h.cfg.Clock()
-	n, e := Replace(s, p, d.Digest, now)
+	n, e := Replace(s, p, p.Digest(), now)
 	if e != nil {
 		api.Error(w, 503, "unavailable")
 		return

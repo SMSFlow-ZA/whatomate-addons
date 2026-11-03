@@ -21,6 +21,8 @@ var phonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 type Employee struct {
 	ID, Phone, Zone, Department string
 	Active                      bool
+	FirstName                   string `json:"FirstName,omitempty"`
+	LastName                    string `json:"LastName,omitempty"`
 }
 
 // Preview is immutable to callers. Approvers review Employees and bind approval
@@ -32,7 +34,15 @@ type Preview struct {
 
 func (p Preview) Digest() string        { return p.digest }
 func (p Preview) Employees() []Employee { return append([]Employee(nil), p.employees...) }
+
+type PreviewOptions struct{ AllowPhoneLessEmployees bool }
+
 func NewPreview(rows []Employee) (Preview, error) {
+	return NewPreviewWithOptions(rows, PreviewOptions{})
+}
+
+// NewPreviewWithOptions is trusted channel configuration, never caller input.
+func NewPreviewWithOptions(rows []Employee, options PreviewOptions) (Preview, error) {
 	if len(rows) == 0 || len(rows) > 100000 {
 		return Preview{}, errors.New("empty or oversized directory")
 	}
@@ -40,14 +50,16 @@ func NewPreview(rows []Employee) (Preview, error) {
 	ids := map[string]bool{}
 	phones := map[string]bool{}
 	for i, e := range copyRows {
-		if e.ID == "" || e.ID != strings.TrimSpace(e.ID) || len(e.ID) > 256 || len(e.Zone) > 256 || len(e.Department) > 256 || !phonePattern.MatchString(e.Phone) {
+		if e.ID == "" || e.ID != strings.TrimSpace(e.ID) || len(e.ID) > 256 || len(e.Zone) > 256 || len(e.Department) > 256 || len(e.FirstName) > 800 || len(e.LastName) > 800 || !(options.AllowPhoneLessEmployees && e.Phone == "") && !phonePattern.MatchString(e.Phone) {
 			return Preview{}, fmt.Errorf("invalid employee at row %d", i+1)
 		}
-		if ids[e.ID] || phones[e.Phone] {
+		if ids[e.ID] || (e.Phone != "" && phones[e.Phone]) {
 			return Preview{}, fmt.Errorf("duplicate employee ID or phone at row %d", i+1)
 		}
 		ids[e.ID] = true
-		phones[e.Phone] = true
+		if e.Phone != "" {
+			phones[e.Phone] = true
+		}
 	}
 	sort.Slice(copyRows, func(i, j int) bool { return copyRows[i].ID < copyRows[j].ID })
 	b, _ := json.Marshal(copyRows)
