@@ -61,7 +61,7 @@ func (s PhysicalService) EraseDelegatedTx(ctx context.Context, tx *sql.Tx, permi
 				}
 				prior, e := get[Record](ctx, t, recordKind, r.ID)
 				if e == nil {
-					if prior.Reference != r.Reference || prior.SubjectID != r.SubjectID || prior.Scope != r.Scope || !sameHoldLineages(prior, r) {
+					if prior.Reference != r.Reference || prior.SubjectID != r.SubjectID || prior.Scope != r.Scope || !sameHoldLineages(prior, r) || prior.SourceRevision != r.SourceRevision {
 						return nil, ErrConflict
 					}
 					r = prior

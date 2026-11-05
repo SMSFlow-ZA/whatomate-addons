@@ -87,7 +87,7 @@ func (s PhysicalService) Discover(ctx context.Context, a api.Actor, scope Scope,
 				}
 				old, e := get[Record](ctx, t, recordKind, r.ID)
 				if e == nil {
-					if old.Scope != r.Scope || old.SubjectID != r.SubjectID || old.Reference != r.Reference || !sameHoldLineages(old, r) {
+					if old.Scope != r.Scope || old.SubjectID != r.SubjectID || old.Reference != r.Reference || !sameHoldLineages(old, r) || old.SourceRevision != r.SourceRevision {
 						return ErrConflict
 					}
 					r = old
@@ -189,7 +189,7 @@ func (s PhysicalService) EraseRequest(ctx context.Context, a api.Actor, scope Sc
 					}
 				} else if e != nil {
 					return e
-				} else if old.SubjectID != r.SubjectID || old.Scope != r.Scope || old.Reference != r.Reference || !sameHoldLineages(old, r) {
+				} else if old.SubjectID != r.SubjectID || old.Scope != r.Scope || old.Reference != r.Reference || !sameHoldLineages(old, r) || old.SourceRevision != r.SourceRevision {
 					return ErrConflict
 				}
 			}

@@ -63,7 +63,7 @@ func (s PhysicalService) ReviewInventoryTx(ctx context.Context, tx *sql.Tx, a ap
 			if e != nil {
 				return nil, ErrConflict
 			}
-			if old.Scope != r.Scope || old.SubjectID != r.SubjectID || old.Reference != r.Reference || !sameHoldLineages(old, r) || RecordFingerprint(old) != RecordFingerprint(r) {
+			if old.Scope != r.Scope || old.SubjectID != r.SubjectID || old.Reference != r.Reference || !sameHoldLineages(old, r) || old.SourceRevision != r.SourceRevision || RecordFingerprint(old) != RecordFingerprint(r) {
 				return nil, ErrConflict
 			}
 			current = append(current, old)

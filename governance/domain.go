@@ -109,6 +109,11 @@ type Record struct {
 	Reference              string
 	CreatedAt, RetainUntil time.Time
 	Generation             uint64
+	// SourceRevision is an optional immutable revision supplied by the source
+	// owner. It is independent of Generation, which advances during recovery.
+	// A source requiring this binding must refuse legacy unbound records; neither
+	// rediscovery nor restore may infer a revision for an approved record.
+	SourceRevision uint64 `json:"source_revision,omitempty"`
 	// HoldLineageIDs are immutable, same-scope dependencies supplied only by a
 	// trusted physical owner. They do not grant access or identify another
 	// subject's object for erasure; they only add hold constraints.
