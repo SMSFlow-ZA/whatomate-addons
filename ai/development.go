@@ -188,6 +188,24 @@ func (p *DevelopmentProvider) selectEvidenceWithRepair(ctx context.Context, r Re
 	if selected.Intent != "answerable" || selected.Index < 0 || selected.Index >= len(spans) {
 		return Completion{}, ErrProvider
 	}
+	// A model can copy the right words but misnumber their paragraph. Resolve only
+	// an unambiguous verbatim quote within this request's existing governed spans.
+	// The independent relevance check below remains mandatory; no source is added.
+	if !repaired && len(strings.Fields(selected.Words)) >= 3 && len(selected.Words) <= 400 && sourceQuote(strings.ToLower(spans[selected.Index].Text), strings.ToLower(selected.Words)) == "" {
+		match := -1
+		for i, candidate := range spans {
+			if sourceQuote(strings.ToLower(candidate.Text), strings.ToLower(selected.Words)) != "" {
+				if match >= 0 {
+					match = -1
+					break
+				}
+				match = i
+			}
+		}
+		if match >= 0 {
+			selected.Index = match
+		}
+	}
 	span := spans[selected.Index]
 	if span.Text == "" || len(span.Text) > maxEvidenceBytes || !strings.Contains(requestPassages(r)[span.source].Text, span.Text) {
 		return Completion{}, ErrProvider

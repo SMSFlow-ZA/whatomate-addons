@@ -64,6 +64,15 @@ semantic evaluation. Classification uses a separate strict bounded host taxonomy
 no execution authority. HTTP inference timeout is 110 seconds; frontend requests
 allow 120 seconds.
 
+If a valid model selection quotes at least three words from the provided evidence
+but names the wrong paragraph index, the development provider can reconcile that
+index only when the quote matches exactly one supplied span. It uses the existing
+quote matching rules and still checks original-source containment and independent
+relevance before returning the original text and its source reference. Ambiguous
+quotes, invalid indices and unsupported intents do not gain this recovery path.
+This does not retrieve extra material, change document access or authorize a
+model-written answer.
+
 `HybridRetriever` uses existing PostgreSQL FTS first. Only if that returns no
 sources does it request bounded authorized current candidates from the same
 repository, embed them with Nomic and return up to eight highest cosine scores.
