@@ -13,6 +13,9 @@ import (
 // Context is copied from the immutable page, not supplied by the model. It is
 // untrusted topic context only; the returned answer still comes from one span.
 func pageContext(source knowledge.Source) string {
+	if p := source.PublicReference; p != nil {
+		return "Public legal reference (not company policy; currentness and individual applicability require review): " + p.Title + "; published " + p.PublishedOn + "; " + p.Jurisdiction + "; " + p.SourceURL + "; " + p.ScopeNote
+	}
 	for _, line := range strings.Split(source.Page.Text, "\n") {
 		line = strings.TrimSpace(line)
 		if len(strings.Fields(line)) < 2 || len([]rune(line)) > 120 || strings.ToUpper(line) == line || strings.ContainsAny(line, "|:_") || pageNumberLine.MatchString(line) {

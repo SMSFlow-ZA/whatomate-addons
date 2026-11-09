@@ -172,7 +172,11 @@ func (w *Worker) Process(ctx context.Context, input []byte, m Metadata) (Output,
 			return fail()
 		}
 		method, revision, rasterHash := "text", w.config.ExtractionRevision, ""
-		if strings.TrimSpace(string(text)) == "" {
+		if !utf8.Valid(text) {
+			return fail()
+		}
+		if sparseNativeText(string(text)) {
+			nativeText := string(text)
 			raster, err := w.command(ctx, w.config.Tools.PDFToPPM, []string{"-f", n, "-l", n, "-singlefile", "-scale-to", "2000", "-r", "150", "-png", inputPath}, w.config.MaxRasterBytes)
 			if err != nil || len(raster) == 0 {
 				return fail()
@@ -187,9 +191,18 @@ func (w *Worker) Process(ctx context.Context, input []byte, m Metadata) (Output,
 			if err != nil {
 				return fail()
 			}
-			method, revision = "ocr", w.config.OCRRevision
+			if !utf8.Valid(text) {
+				return fail()
+			}
+			combined, usedOCR := preserveSparseNativeText(nativeText, string(text))
+			text = []byte(combined)
+			if usedOCR {
+				method, revision = "ocr", w.config.OCRRevision
+			} else {
+				rasterHash = ""
+			}
 		}
-		if !utf8.Valid(text) {
+		if !utf8.Valid(text) || int64(len(text)) > w.config.MaxPageTextBytes {
 			return fail()
 		}
 		total += int64(len(text))

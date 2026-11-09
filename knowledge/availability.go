@@ -44,5 +44,5 @@ func (r *PostgresRepository) ReferenceAvailable(ctx context.Context, q Query, re
 			allowed = true
 		}
 	}
-	return allowed && d.ID == ref.DocumentID && d.Version == ref.Version && manifest == ref.ManifestHash && ref.Page.Number > 0 && ref.Page.Number <= len(d.Pages) && ref.Reference == fmt.Sprintf("%s:%d", manifest, ref.Page.Number), nil
+	return EqualPublicReference(d.PublicReference, ref.PublicReference) && allowed && d.ID == ref.DocumentID && d.Version == ref.Version && manifest == ref.ManifestHash && ref.Page.Number > 0 && ref.Page.Number <= len(d.Pages) && ref.Reference == fmt.Sprintf("%s:%d", manifest, ref.Page.Number), nil
 }

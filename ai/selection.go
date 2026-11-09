@@ -1,12 +1,39 @@
 package ai
 
 import (
+	"encoding/json"
 	"github.com/SMSFlow-ZA/whatomate-addons/knowledge"
 	"regexp"
 	"strings"
 )
 
 const maxEvidenceBytes = 900
+
+const maxSelectorInputBytes = 30000
+
+// boundedSelectorInput retains a prefix of already ranked evidence. The wire
+// budget includes question, provenance, references, escaping and UTF-8 bytes.
+// Drop whole lowest-ranked spans; never truncate evidence text or provenance.
+func boundedSelectorInput(question string, ranked []evidenceSpan) ([]evidenceSpan, []byte, error) {
+	spans := append([]evidenceSpan(nil), ranked...)
+	for i := range spans {
+		spans[i].Index = i
+	}
+	for len(spans) > 0 {
+		input, err := json.Marshal(struct {
+			Question string         `json:"question"`
+			Evidence []evidenceSpan `json:"evidence"`
+		}{question, spans})
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(input) <= maxSelectorInputBytes {
+			return spans, input, nil
+		}
+		spans = spans[:len(spans)-1]
+	}
+	return nil, nil, nil
+}
 
 // Evidence is an immutable bounded source span, not model-authored text.
 type evidenceSpan struct {
@@ -32,7 +59,7 @@ func passageSpans(sources []EvidencePassage) []evidenceSpan {
 	spans := []evidenceSpan{}
 	total := 0
 	for source, s := range sources {
-		for _, block := range paragraphBreak.Split(s.Text, -1) {
+		for _, block := range evidenceParagraphs(s.Text) {
 			block = strings.TrimSpace(block)
 			pieces := []string{block}
 			if len(block) > maxEvidenceBytes {

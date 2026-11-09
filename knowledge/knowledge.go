@@ -31,6 +31,7 @@ type Document struct {
 	Audiences                []string
 	Effective, WithdrawAt    time.Time
 	Pages                    []Page
+	PublicReference          *PublicReference `json:"PublicReference,omitempty"`
 }
 
 // Evidence is supplied only by a trusted scanning/extraction adapter. It must
@@ -53,6 +54,9 @@ func ManifestHash(d Document) string {
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 func Publish(d Document, e Evidence, a Approval) (Publication, error) {
+	if d.PublicReference != nil && (!ValidPublicReference(d.PublicReference) || d.PublicReference.OriginalSHA256 != d.ContentHash) {
+		return Publication{}, ErrDenied
+	}
 	if d.ID == "" || d.Version == "" || len(d.Content) == 0 || d.Effective.IsZero() || len(d.Audiences) == 0 || len(d.Pages) == 0 || a.Reviewer == "" || a.ManifestHash != ManifestHash(d) || !e.MalwareClean || !e.ExtractionComplete || e.ScannerRevision == "" || e.ContentHash != d.ContentHash || d.ContentHash != fmt.Sprintf("%x", sha256.Sum256(d.Content)) || (!d.WithdrawAt.IsZero() && !d.WithdrawAt.After(d.Effective)) {
 		return Publication{}, ErrDenied
 	}
@@ -71,6 +75,7 @@ func Publish(d Document, e Evidence, a Approval) (Publication, error) {
 	d.Content = append([]byte(nil), d.Content...)
 	d.Pages = append([]Page(nil), d.Pages...)
 	d.Audiences = append([]string(nil), d.Audiences...)
+	d.PublicReference = ClonePublicReference(d.PublicReference)
 	return Publication{document: d, manifestHash: a.ManifestHash}, nil
 }
 
@@ -88,6 +93,7 @@ type Query struct {
 type Source struct {
 	Reference, DocumentID, Version, ContentHash, ManifestHash string
 	Page                                                      Page
+	PublicReference                                           *PublicReference `json:"PublicReference,omitempty"`
 }
 type Catalog struct {
 	mu           sync.RWMutex
@@ -168,7 +174,7 @@ func (c *Catalog) Retrieve(ctx context.Context, q Query, auth Authorizer) ([]Sou
 		}
 		for _, page := range d.Pages {
 			if strings.Contains(strings.ToLower(page.Text), strings.ToLower(strings.TrimSpace(q.Text))) {
-				result = append(result, Source{Reference: fmt.Sprintf("%s:%d", p.manifestHash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: p.manifestHash, Page: page})
+				result = append(result, Source{Reference: fmt.Sprintf("%s:%d", p.manifestHash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: p.manifestHash, Page: page, PublicReference: ClonePublicReference(d.PublicReference)})
 				if len(result) == 20 {
 					return result, nil
 				}

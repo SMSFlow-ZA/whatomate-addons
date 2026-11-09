@@ -41,7 +41,7 @@ func TestDevelopmentReselectsAfterTopicalPassage(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
 	})}}
 	text := "This guide discusses eligibility in a general introduction.\n\nA separate case authorization is required before viewing any record."
-	out, err := p.Generate(context.Background(), Request{Question: "Does eligibility allow viewing a record?", Sources: []knowledge.Source{{Reference: "policy", DocumentID: "policy", Page: knowledge.Page{Text: text}}}})
+	out, err := p.generateEvidence(context.Background(), Request{Question: "Does eligibility allow viewing a record?", Sources: []knowledge.Source{{Reference: "policy", DocumentID: "policy", Page: knowledge.Page{Text: text}}}})
 	if err != nil || !out.Grounded || out.Answer != "A separate case authorization is required before viewing any record." || len(out.Citations) != 1 || out.Citations[0] != "policy" {
 		t.Fatal("direct evidence hidden by topical first choice", out, err)
 	}
@@ -63,7 +63,7 @@ func TestDevelopmentAcceptsSourceAnchoredSelection(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
 	})}}
-	out, err := p.Generate(context.Background(), Request{Question: "What is the guidance?", Sources: testSource()})
+	out, err := p.generateEvidence(context.Background(), Request{Question: "What is the guidance?", Sources: testSource()})
 	if err != nil || !out.Grounded || out.Answer != "The approved source contains relevant guidance." {
 		t.Fatal("anchored selection rejected", out, err)
 	}
@@ -114,7 +114,7 @@ func TestDevelopmentRanksSpecificEvidenceBeforeBroadCandidates(t *testing.T) {
 		parts = append(parts, fmt.Sprintf("This broad worksheet introduction covers general topic number %d.", i))
 	}
 	parts = append(parts, "A worksheet never grants permission to read a case.")
-	out, err := p.Generate(context.Background(), Request{Question: "Does a worksheet grant permission?", Sources: []knowledge.Source{{Reference: "guide", Page: knowledge.Page{Text: strings.Join(parts, "\n\n")}}}})
+	out, err := p.generateEvidence(context.Background(), Request{Question: "Does a worksheet grant permission?", Sources: []knowledge.Source{{Reference: "guide", Page: knowledge.Page{Text: strings.Join(parts, "\n\n")}}}})
 	if err != nil || out.Answer != "A worksheet never grants permission to read a case." {
 		t.Fatal("specific semantic evidence was hidden behind broad candidates", out, err)
 	}
@@ -177,7 +177,7 @@ func TestFreeTextVersionDirectiveCannotReplaceGovernedSelection(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
 		})}}
-		out, err := p.Generate(context.Background(), Request{Question: question, Sources: testSource()})
+		out, err := p.generateEvidence(context.Background(), Request{Question: question, Sources: testSource()})
 		if err != nil || out.Grounded || calls != 0 {
 			t.Fatal("free-text revision directive reached inference", question, out, err, calls)
 		}

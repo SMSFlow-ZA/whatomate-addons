@@ -19,6 +19,8 @@ type Request struct {
 	Sources  []knowledge.Source
 }
 type Completion struct {
+	Support   []SupportQuote `json:"-"`
+	verified  [32]byte
 	Answer    string   `json:"answer"`
 	Citations []string `json:"citations"`
 	Grounded  bool     `json:"grounded"`
@@ -28,6 +30,7 @@ type Generator interface {
 	Generate(context.Context, Request) (Completion, error)
 }
 type Result struct {
+	Support   []SupportQuote
 	Text      string
 	Citations []knowledge.Source
 	Handoff   bool
@@ -43,33 +46,36 @@ func answer(ctx context.Context, g Generator, r Request) Result {
 		if s.Reference == "" || s.ManifestHash == "" || s.Page.Number < 1 || s.Page.Text == "" {
 			return fallback()
 		}
+		s.PublicReference = knowledge.ClonePublicReference(s.PublicReference)
 		available[s.Reference] = s
 	}
 	// Preserve an independent snapshot even when an adapter mutates its request.
 	r.Sources = append([]knowledge.Source(nil), r.Sources...)
+	for i := range r.Sources {
+		r.Sources[i].PublicReference = knowledge.ClonePublicReference(r.Sources[i].PublicReference)
+	}
 	out, err := g.Generate(ctx, r)
 	if err != nil || len(out.Answer) > maxEvidenceBytes || !out.Grounded || out.Inference || strings.TrimSpace(out.Answer) == "" || len(out.Citations) == 0 {
 		return fallback()
 	}
 	result := Result{Text: out.Answer}
-	supported := false
+	availableText := map[string]string{}
 	seen := map[string]bool{}
 	for _, ref := range out.Citations {
 		s, ok := available[ref]
 		if !ok {
 			return fallback()
 		}
-		if strings.Contains(s.Page.Text, out.Answer) {
-			supported = true
-		}
+		availableText[ref] = s.Page.Text
 		if !seen[ref] {
 			result.Citations = append(result.Citations, s)
 			seen[ref] = true
 		}
 	}
-	if !supported {
+	if !validCompletionSupport(r.Question, out, availableText) {
 		return fallback()
 	}
+	result.Support = out.VerifiedSupport(r.Question)
 	return result
 }
 

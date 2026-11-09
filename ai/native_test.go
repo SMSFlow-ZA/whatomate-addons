@@ -34,7 +34,7 @@ func TestNativeSourceIndexMapsOnlyServerOwnedReference(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
 		})}}
-		out, e := p.Generate(context.Background(), Request{Question: "policy", Sources: testSource()})
+		out, e := p.generateEvidence(context.Background(), Request{Question: "policy", Sources: testSource()})
 		if strings.Contains(content, `"evidence_index":64`) {
 			if e == nil {
 				t.Fatal("unbounded source index accepted")
@@ -67,7 +67,7 @@ func TestIndependentVerifierCanRejectTopicalSelectorOutput(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
 		})}}
-		out, e := p.Generate(context.Background(), Request{Question: "Show another case narrative", Sources: testSource()})
+		out, e := p.generateEvidence(context.Background(), Request{Question: "Show another case narrative", Sources: testSource()})
 		if e != nil || out.Grounded || out.Answer != "" || calls != 2 {
 			t.Fatal("topical selector bypassed independent verifier", out, e, calls)
 		}

@@ -32,8 +32,9 @@ type UploadMetadata struct {
 	WithdrawAt time.Time `json:"withdraw_at,omitempty"`
 	// Omitted legacy metadata remains policy. Keep omitempty so old canonical
 	// metadata hashes and already processed editions are unchanged.
-	DocumentType string `json:"document_type,omitempty"`
-	Title        string `json:"title,omitempty"`
+	DocumentType    string           `json:"document_type,omitempty"`
+	Title           string           `json:"title,omitempty"`
+	PublicReference *PublicReference `json:"public_reference,omitempty"`
 }
 
 func (m UploadMetadata) Type() string {
@@ -106,7 +107,14 @@ func MigrateHTTP(ctx context.Context, db *sql.DB) error {
 	return e
 }
 func validMetadata(m UploadMetadata) bool {
-	if (m.Type() != "policy" && m.Type() != "form") || len(m.Title) > 200 || strings.ContainsAny(m.Title, "\r\n\x00") || (m.Type() == "form" && strings.TrimSpace(m.Title) == "") {
+	if (m.Type() != "policy" && m.Type() != "form" && m.Type() != "public_legal_reference") || len(m.Title) > 200 || strings.ContainsAny(m.Title, "\r\n\x00") || (m.Type() != "policy" && strings.TrimSpace(m.Title) == "") {
+		return false
+	}
+	if m.Type() == "public_legal_reference" {
+		if !ValidPublicReference(m.PublicReference) || m.Title != m.PublicReference.Title {
+			return false
+		}
+	} else if m.PublicReference != nil {
 		return false
 	}
 	if m.DocumentID == "" || len(m.DocumentID) > 200 || m.Version == "" || len(m.Version) > 100 || m.Filename == "" || len(m.Filename) > 255 || len(m.MediaType) > 100 || m.Effective.IsZero() || len(m.Audiences) == 0 || len(m.Audiences) > 32 || (!m.WithdrawAt.IsZero() && !m.WithdrawAt.After(m.Effective)) {
@@ -125,6 +133,9 @@ func (q *ProcessingQueue) enqueue(ctx context.Context, tenant, actor string, inp
 	return q.enqueueGuarded(ctx, tenant, actor, input, m, nil)
 }
 func (q *ProcessingQueue) enqueueGuarded(ctx context.Context, tenant, actor string, input []byte, m UploadMetadata, guard func(context.Context, *sql.Tx) error) (string, error) {
+	if m.PublicReference != nil && m.PublicReference.OriginalSHA256 != digest(input) {
+		return "", ErrDenied
+	}
 	if q.db == nil || tenant == "" || actor == "" || len(input) == 0 || len(input) > MaxUploadBytes || !validMetadata(m) {
 		return "", ErrDenied
 	}
@@ -275,7 +286,10 @@ func (q *ProcessingQueue) complete(ctx context.Context, j ProcessingJob, pages [
 	if total > 20<<20 || len(pages) > 10000 {
 		return ErrDenied
 	}
-	d := Document{ID: m.DocumentID, Version: m.Version, Content: input, ContentHash: j.InputHash, Audiences: m.Audiences, Effective: m.Effective, WithdrawAt: m.WithdrawAt, Pages: pages}
+	if m.PublicReference != nil && m.PublicReference.OriginalSHA256 != j.InputHash {
+		return ErrDenied
+	}
+	d := Document{ID: m.DocumentID, Version: m.Version, Content: input, ContentHash: j.InputHash, Audiences: m.Audiences, Effective: m.Effective, WithdrawAt: m.WithdrawAt, Pages: pages, PublicReference: ClonePublicReference(m.PublicReference)}
 	if _, err = Publish(d, e, Approval{Reviewer: "worker-validation", ManifestHash: ManifestHash(d)}); err != nil {
 		return err
 	}

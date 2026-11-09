@@ -237,7 +237,7 @@ func decodeVectorPage(document, evidence, approval []byte, hash string, page Pag
 	if err != nil || hash != publication.manifestHash || page.Number < 1 || page.Number > len(d.Pages) || d.Pages[page.Number-1] != page {
 		return Source{}, ErrDenied
 	}
-	return Source{Reference: fmt.Sprintf("%s:%d", hash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: hash, Page: page}, nil
+	return Source{Reference: fmt.Sprintf("%s:%d", hash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: hash, Page: page, PublicReference: ClonePublicReference(d.PublicReference)}, nil
 }
 func pageHash(page Page) string {
 	raw, _ := json.Marshal(page)

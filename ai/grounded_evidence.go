@@ -36,7 +36,6 @@ func GenerateGroundedEvidence(ctx context.Context, g Generator, r Request) (Comp
 	if !out.Grounded || out.Inference || len(out.Citations) == 0 || len(out.Citations) > 20 || strings.TrimSpace(out.Answer) == "" || len(out.Answer) > maxEvidenceBytes {
 		return Completion{}, nil
 	}
-	supported := false
 	seen := map[string]bool{}
 	for _, ref := range out.Citations {
 		v, ok := available[ref]
@@ -44,11 +43,9 @@ func GenerateGroundedEvidence(ctx context.Context, g Generator, r Request) (Comp
 			return Completion{}, nil
 		}
 		seen[ref] = true
-		if strings.Contains(v, out.Answer) {
-			supported = true
-		}
+		_ = v
 	}
-	if !supported {
+	if !validCompletionSupport(r.Question, out, available) {
 		return Completion{}, nil
 	}
 	return out, nil

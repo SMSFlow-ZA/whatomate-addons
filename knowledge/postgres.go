@@ -244,7 +244,7 @@ func (r *PostgresRepository) retrieve(ctx context.Context, q Query, auth Authori
 			rows.Close()
 			return nil, ErrDenied
 		}
-		sources = append(sources, Source{Reference: fmt.Sprintf("%s:%d", p.manifestHash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: p.manifestHash, Page: page})
+		sources = append(sources, Source{Reference: fmt.Sprintf("%s:%d", p.manifestHash, page.Number), DocumentID: d.ID, Version: d.Version, ContentHash: d.ContentHash, ManifestHash: p.manifestHash, Page: page, PublicReference: ClonePublicReference(d.PublicReference)})
 	}
 	err = rows.Err()
 	rows.Close()
